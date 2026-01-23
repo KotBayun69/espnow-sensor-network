@@ -1,0 +1,21 @@
+{
+"folders": [
+{
+"name": "ROOT (README & Git)",
+"path": "."
+},
+{
+"name": "Gateway",
+"path": "ESPNOW_Gateway"
+},
+{
+"name": "Sensor",
+"path": "ESPNOW_Sensor"
+},
+{
+"name": "Transmitter",
+"path": "ESPNOW_Transmitter"
+}
+],
+"settings": {}
+}
