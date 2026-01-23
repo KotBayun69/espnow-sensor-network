@@ -1,0 +1,75 @@
+# Home Assistant MQTT Configuration
+# Add this to your Home Assistant configuration
+# Either include it in configuration.yaml or create a separate mqtt.yaml file
+
+mqtt:
+  sensor:
+    # Temperature Sensor
+    - name: "Test ESP-NOW Temperature"
+      unique_id: "test_esp_now_temperature"
+      state_topic: "espnow/sensor/data"
+      value_template: "{% if value_json.type == 'DATA' %}{{ value_json.temperature | round(1) }}{% else %}{{ states('sensor.test_esp_now_temperature') }}{% endif %}"
+      unit_of_measurement: "°C"
+      device_class: "temperature"
+      state_class: "measurement"
+      device:
+        identifiers: ["test_esp_now"]
+        name: "Test ESP-NOW Sensor"
+        model: "ESP-NOW Environmental Sensor"
+        manufacturer: "Custom"
+    
+    # Humidity Sensor
+    - name: "Test ESP-NOW Humidity"
+      unique_id: "test_esp_now_humidity"
+      state_topic: "espnow/sensor/data"
+      value_template: "{% if value_json.type == 'DATA' %}{{ value_json.humidity | round(1) }}{% else %}{{ states('sensor.test_esp_now_humidity') }}{% endif %}"
+      unit_of_measurement: "%"
+      device_class: "humidity"
+      state_class: "measurement"
+      device:
+        identifiers: ["test_esp_now"]
+        name: "Test ESP-NOW Sensor"
+        model: "ESP-NOW Environmental Sensor"
+        manufacturer: "Custom"
+    
+    # Pressure Sensor
+    - name: "Test ESP-NOW Pressure"
+      unique_id: "test_esp_now_pressure"
+      state_topic: "espnow/sensor/data"
+      value_template: "{% if value_json.type == 'DATA' %}{{ value_json.pressure | round(1) }}{% else %}{{ states('sensor.test_esp_now_pressure') }}{% endif %}"
+      unit_of_measurement: "hPa"
+      device_class: "pressure"
+      state_class: "measurement"
+      device:
+        identifiers: ["test_esp_now"]
+        name: "Test ESP-NOW Sensor"
+        model: "ESP-NOW Environmental Sensor"
+        manufacturer: "Custom"
+    
+    # Light Sensor (optional - if you have BH1750)
+    - name: "Test ESP-NOW Light"
+      unique_id: "test_esp_now_light"
+      state_topic: "espnow/sensor/data"
+      value_template: "{% if value_json.type == 'DATA' %}{{ value_json.lux | round(0) }}{% else %}{{ states('sensor.test_esp_now_light') }}{% endif %}"
+      unit_of_measurement: "lx"
+      device_class: "illuminance"
+      state_class: "measurement"
+      device:
+        identifiers: ["test_esp_now"]
+        name: "Test ESP-NOW Sensor"
+        model: "ESP-NOW Environmental Sensor"
+        manufacturer: "Custom"
+    
+    # Battery Voltage Sensor
+    - name: "Test ESP-NOW Battery Voltage"
+      unique_id: "test_esp_now_battery_voltage"
+      state_topic: "espnow/sensor/data"
+      value_template: "{% if value_json.type == 'DATA' %}{{ value_json.batteryVoltage | round(2) }}{% else %}{{ states('sensor.test_esp_now_battery_voltage') }}{% endif %}"
+      unit_of_measurement: "V"
+      device_class: "voltage"
+      state_class: "measurement"
+      device:
+        identifiers: ["test_esp_now"]
+        name: "Test ESP-NOW Sensor"
+        model: "ESP-NOW Environmental Sensor"
+        manufacturer: "Custom"

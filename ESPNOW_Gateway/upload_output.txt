@@ -1,0 +1,34 @@
+Processing d1_mini (platform: espressif8266; board: d1_mini; framework: arduino)
+--------------------------------------------------------------------------------
+Verbose mode can be enabled via `-v, --verbose` option
+CONFIGURATION: https://docs.platformio.org/page/boards/espressif8266/d1_mini.html
+PLATFORM: Espressif 8266 (4.2.1) > WeMos D1 R2 and mini
+HARDWARE: ESP8266 80MHz, 80KB RAM, 4MB Flash
+PACKAGES: 
+ - framework-arduinoespressif8266 @ 3.30102.0 (3.1.2) 
+ - tool-esptool @ 1.413.0 (4.13) 
+ - tool-esptoolpy @ 1.30000.201119 (3.0.0) 
+ - tool-mklittlefs @ 1.203.210628 (2.3) 
+ - tool-mkspiffs @ 1.200.0 (2.0) 
+ - toolchain-xtensa @ 2.100300.220621 (10.3.0)
+LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
+LDF Modes: Finder ~ chain, Compatibility ~ soft
+Found 38 compatible libraries
+Scanning dependencies...
+Dependency Graph
+|-- ArduinoJson @ 6.21.5
+|-- ESP8266WiFi @ 1.0
+Building in release mode
+Retrieving maximum program size .pio\build\d1_mini\firmware.elf
+Checking size .pio\build\d1_mini\firmware.elf
+Advanced Memory Usage is available via "PlatformIO Home > Project Inspect"
+RAM:   [===       ]  35.0% (used 28640 bytes from 81920 bytes)
+Flash: [===       ]  26.1% (used 272283 bytes from 1044464 bytes)
+Configuring upload protocol...
+AVAILABLE: espota, esptool
+CURRENT: upload_protocol = esptool
+Looking for upload port...
+Error: Please specify `upload_port` for environment or use global `--upload-port` option.
+For some development platforms it can be a USB flash drive (i.e. /media/<user>/<device name>)
+*** [upload] Explicit exit, status 1
+========================= [FAILED] Took 10.18 seconds =========================
