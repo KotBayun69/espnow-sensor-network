@@ -6,6 +6,6 @@ This project consists of three components for an ESP-NOW based sensor network:
 - **Transmitter**: Receives data from the Gateway and publishes it to MQTT / Home Assistant.
 
 ## Project Structure
-- `ESPNOW_Gateway/`: ESP32 Gateway code.
-- `ESPNOW_Sensor/`: XIAO ESP32C3 Sensor code.
+- `ESPNOW_Gateway/`: D1 Mini Gateway code.
+- `ESPNOW_Sensor/`: ESP32C3 Super Mini Sensor code.
 - `ESPNOW_Transmitter/`: D1 Mini Transmitter code.
