@@ -108,7 +108,19 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       if (doc.containsKey("ota")) {
         const char* otaCmd = doc["ota"];
         if (strcmp(otaCmd, "off") == 0) {
-          logToBoth("MQTT: OTA mode OFF - entering deep sleep");
+          logToBoth("MQTT: OTA mode OFF - publishing status and entering deep sleep");
+          
+          // Publish online status before leaving
+          StaticJsonDocument<128> statusDoc;
+          statusDoc["device"] = DEVICE_NAME;
+          statusDoc["ip"] = "WiFi.localIP().toString()";
+          statusDoc["status"] = "online";
+          char buffer[128];
+          serializeJson(statusDoc, buffer);
+          mqttClient.publish("espnow/status", buffer);
+          
+          // Give time for message to send
+          delay(500); 
           mqttClient.disconnect();
           delay(100);
           
@@ -158,6 +170,16 @@ void mqttReconnect() {
       logToBoth("✓ MQTT connected!");
       mqttClient.subscribe("espnow/control");
       logToBoth("✓ Subscribed to espnow/control");
+      
+      // Publish status
+      StaticJsonDocument<128> statusDoc;
+      statusDoc["device"] = DEVICE_NAME;
+      statusDoc["ip"] = WiFi.localIP().toString();
+      statusDoc["status"] = "ota";
+      char buffer[128];
+      serializeJson(statusDoc, buffer);
+      mqttClient.publish("espnow/status", buffer);
+      logToBoth("✓ Published status: " + String(buffer));
     } else {
       int state = mqttClient.state();
       String error = "✗ MQTT connection failed, rc=";

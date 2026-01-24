@@ -9,10 +9,21 @@
 #include <map>
 #include <vector>
 
-bool inMaintenanceMode = false;
+#include <PubSubClient.h>
+
+bool otaMode = false;
 WiFiServer telnetServer(23);
 WiFiClient telnetClient;
 bool isOTAUpdating = false;
+
+// MQTT Configuration
+char mqtt_server[40];
+char mqtt_port[6] = "1883";
+char mqtt_user[32];
+char mqtt_pass[32];
+
+WiFiClient espClient;
+PubSubClient client(espClient);
 
 void logToBoth(const String& msg, bool newline = true) {
     Serial.print(msg);
@@ -21,6 +32,76 @@ void logToBoth(const String& msg, bool newline = true) {
     if (telnetClient && telnetClient.connected()) {
         telnetClient.print(msg);
         if (newline) telnetClient.println();
+    }
+}
+
+void loadConfig() {
+    if (LittleFS.begin()) {
+        if (LittleFS.exists("/config.json")) {
+            File configFile = LittleFS.open("/config.json", "r");
+            if (configFile) {
+                size_t size = configFile.size();
+                std::unique_ptr<char[]> buf(new char[size]);
+                configFile.readBytes(buf.get(), size);
+                StaticJsonDocument<512> json;
+                DeserializationError error = deserializeJson(json, buf.get());
+                if (!error) {
+                    strcpy(mqtt_server, json["mqtt_server"]);
+                    strcpy(mqtt_port, json["mqtt_port"]);
+                    strcpy(mqtt_user, json["mqtt_user"]);
+                    strcpy(mqtt_pass, json["mqtt_pass"]);
+                }
+            }
+        }
+    }
+}
+
+void saveConfig() {
+    StaticJsonDocument<512> json;
+    json["mqtt_server"] = mqtt_server;
+    json["mqtt_port"] = mqtt_port;
+    json["mqtt_user"] = mqtt_user;
+    json["mqtt_pass"] = mqtt_pass;
+
+    File configFile = LittleFS.open("/config.json", "w");
+    if (configFile) {
+        serializeJson(json, configFile);
+        configFile.close();
+    }
+}
+
+void processCommand(String line); // Forward declaration
+
+void reconnectMqtt() {
+    if (!client.connected()) {
+        Serial.print("Attempting MQTT connection...");
+        String clientId = "ESPNOW-Gateway-" + String(ESP.getChipId(), HEX);
+        if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
+            Serial.println("connected");
+            client.subscribe("esphome/control");
+        } else {
+            Serial.print("failed, rc=");
+            Serial.print(client.state());
+            delay(5000);
+        }
+    }
+}
+
+void callback(char* topic, byte* payload, unsigned int length) {
+    String msg = "";
+    for (unsigned int i = 0; i < length; i++) {
+        msg += (char)payload[i];
+    }
+    
+    if (String(topic) == "esphome/control") {
+        if (msg.indexOf("ota off") >= 0 || msg.indexOf("\"ota\":\"off\"") >= 0) {
+            logToBoth("Exiting OTA mode via MQTT request...");
+            otaMode = false;
+            ESP.restart(); // Cleanest way to reset
+        } else {
+            // Pass other commands to existing processor
+            processCommand(msg);
+        }
     }
 }
 
@@ -99,8 +180,33 @@ typedef struct __attribute__((packed)) struct_data_message {
     float analogValue;
 } DataMessage;
 
+// --- Buffer Implementation ---
+struct QueueItem {
+    uint8_t mac[6];
+    uint8_t data[250]; // ESP-NOW max payload is 250 bytes
+    uint8_t len;
+};
+
+const int BUFFER_SIZE = 32;
+QueueItem msgBuffer[BUFFER_SIZE];
+volatile int head = 0;
+volatile int tail = 0;
+
+void enqueueMessage(const uint8_t* mac, const uint8_t* data, uint8_t len) {
+    int nextHead = (head + 1) % BUFFER_SIZE;
+    if (nextHead != tail) {
+        memcpy(msgBuffer[head].mac, mac, 6);
+        memcpy(msgBuffer[head].data, data, len);
+        msgBuffer[head].len = len;
+        head = nextHead;
+    } else {
+        // Buffer overflow - drop packet
+    }
+}
+// -----------------------------
+
 void onDataRecv(uint8_t * mac, uint8_t *incomingData, uint8_t len) {
-    if (len == 0) return;
+    if (len == 0 || len > 250) return;
     uint8_t type = incomingData[0];
     
     char macStr[18];
@@ -140,63 +246,75 @@ void onDataRecv(uint8_t * mac, uint8_t *incomingData, uint8_t len) {
             delay(10); // Small delay between messages
             esp_now_send(mac, (uint8_t *)&cmd, sizeof(CmdMessage));
             
-            Serial.printf("Sent CMD: OTA=ON for device '%s'\n", devName.c_str());
-            // Note: Don't clear the flag yet - sensor will send multiple DATA messages while awake
+            // Serial log removed from ISR to avoid blocking
         }
     }
 
+    // 2. Enqueue for Processing
+    enqueueMessage(mac, incomingData, len);
+}
 
-
-
-    // 2. Data Processing and Logging
-    StaticJsonDocument<512> doc;
-    doc["mac"] = macStr;
-
-    if (type == MSG_CONFIG && len >= sizeof(ConfigMessage)) {
-        ConfigMessage config;
-        memcpy(&config, incomingData, sizeof(ConfigMessage));
+void processBuffer() {
+    while (head != tail) {
+        // Read from tail
+        QueueItem& item = msgBuffer[tail];
         
-        Serial.printf("Registered device: %s -> %s\n", macStr, config.deviceName);
-        
-        doc["type"] = "CONFIG";
-        doc["deviceName"] = config.deviceName;
-        doc["hasBME"] = config.hasBME;
-        doc["hasBH1750"] = config.hasBH1750;
-        doc["hasBattery"] = config.hasBattery;
-        doc["hasBinary"] = config.hasBinary;
-        doc["hasAnalog"] = config.hasAnalog;
-    } 
-    else if (type == MSG_DATA && len >= sizeof(DataMessage)) {
-        DataMessage data;
-        memcpy(&data, incomingData, sizeof(DataMessage));
-        
-        doc["type"] = "DATA";
-        if (deviceNames.count(macStr)) {
-            doc["deviceName"] = deviceNames[macStr];
-        } else {
-            doc["deviceName"] = "unknown";
-            // If unknown, we might want to tell the sensor to re-identify 
-            // but for now just log it.
+        char macStr[18];
+        snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X", 
+                 item.mac[0], item.mac[1], item.mac[2], item.mac[3], item.mac[4], item.mac[5]);
+
+        uint8_t type = item.data[0];
+        StaticJsonDocument<512> doc;
+        doc["mac"] = macStr;
+
+        if (type == MSG_CONFIG && item.len >= sizeof(ConfigMessage)) {
+            ConfigMessage config;
+            memcpy(&config, item.data, sizeof(ConfigMessage));
+            
+            Serial.printf("Registered device: %s -> %s\n", macStr, config.deviceName);
+            
+            doc["type"] = "CONFIG";
+            doc["deviceName"] = config.deviceName;
+            doc["hasBME"] = config.hasBME;
+            doc["hasBH1750"] = config.hasBH1750;
+            doc["hasBattery"] = config.hasBattery;
+            doc["hasBinary"] = config.hasBinary;
+            doc["hasAnalog"] = config.hasAnalog;
+        } 
+        else if (type == MSG_DATA && item.len >= sizeof(DataMessage)) {
+            DataMessage data;
+            memcpy(&data, item.data, sizeof(DataMessage));
+            
+            doc["type"] = "DATA";
+            if (deviceNames.count(macStr)) {
+                doc["deviceName"] = deviceNames[macStr];
+            } else {
+                doc["deviceName"] = "unknown";
+            }
+            
+            doc["temperature"] = data.temperature;
+            doc["humidity"] = data.humidity;
+            doc["pressure"] = data.pressure;
+            doc["lux"] = data.lux;
+            doc["batteryVoltage"] = data.batteryVoltage;
+            doc["binaryState"] = data.binaryState;
+            doc["analogValue"] = data.analogValue;
+        } else if (type != MSG_ACK) {
+            Serial.printf("Processing: Unknown message type %d from %s\n", type, macStr);
+            // Advance tail and continue to next item
+            tail = (tail + 1) % BUFFER_SIZE;
+            continue; 
         }
-        
-        doc["temperature"] = data.temperature;
-        doc["humidity"] = data.humidity;
-        doc["pressure"] = data.pressure;
-        doc["lux"] = data.lux;
-        doc["batteryVoltage"] = data.batteryVoltage;
-        doc["binaryState"] = data.binaryState;
-        doc["analogValue"] = data.analogValue;
-    } else if (type != MSG_ACK) {
-        Serial.printf("Unknown message type %d from %s\n", type, macStr);
-        return;
-    }
 
-    if (doc.containsKey("type")) {
-        String json;
-        serializeJson(doc, json);
-        logToBoth(json);
-        serializeJson(doc, swSerial);
-        swSerial.println();
+        if (doc.containsKey("type")) {
+            String json;
+            serializeJson(doc, json);
+            logToBoth(json);
+            serializeJson(doc, swSerial);
+            swSerial.println();
+        }
+
+        tail = (tail + 1) % BUFFER_SIZE;
     }
 }
 
@@ -205,9 +323,11 @@ void setup() {
     swSerial.begin(9600);
     Serial.println();
     Serial.println("ESP-NOW Gateway Starting...");
+    
+    // Load config for MQTT
+    loadConfig();
 
     WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
 
     // Use a fixed channel
     uint8_t channel = 1;
@@ -228,17 +348,8 @@ void setup() {
     Serial.println("Ready to receive messages.");
 }
 
-void loop() {
-    if (inMaintenanceMode) {
-        ArduinoOTA.handle();
-        if (isOTAUpdating) return;
-    }
-
-    // Handle commands from Transmitter via swSerial or Serial
-    if (swSerial.available() || Serial.available()) {
-        Stream& input = swSerial.available() ? static_cast<Stream&>(swSerial) : static_cast<Stream&>(Serial);
-        String line = input.readStringUntil('\n');
-        if (line.length() > 0) {
+void processCommand(String line) {
+     if (line.length() > 0) {
             StaticJsonDocument<256> doc;
             DeserializationError error = deserializeJson(doc, line);
             if (!error && doc.containsKey("device")) {
@@ -257,10 +368,10 @@ void loop() {
                         if (strcmp(key, "ota") == 0) {
                             const char* value = kv.value().as<const char*>();
                             if (strcmp(value, "on") == 0) {
-                                logToBoth("Gateway entering MAINTENANCE/OTA mode...");
-                                inMaintenanceMode = true;
+                                logToBoth("Gateway entering OTA/MAINTENANCE mode...");
+                                otaMode = true;
                             } else {
-                                logToBoth("Gateway exiting MAINTENANCE mode (rebooting)...");
+                                logToBoth("Gateway exiting OTA mode (rebooting)...");
                                 delay(100);
                                 ESP.restart();
                             }
@@ -285,15 +396,15 @@ void loop() {
                         if (deviceMacs.count(devName)) {
                             CmdMessage cmd;
                             cmd.type = MSG_CMD;
-                            cmd.cmdType = cmdType;
+                            cmd.cmdType = CMD_OTA;
                             cmd.value = cmdValue;
                             
                             std::vector<uint8_t>& macVec = deviceMacs[devName];
-                            uint8_t mac[6];
-                            std::copy(macVec.begin(), macVec.end(), mac);
+                            uint8_t mac_addr[6];
+                            std::copy(macVec.begin(), macVec.end(), mac_addr);
                             
-                            esp_now_add_peer(mac, ESP_NOW_ROLE_COMBO, 1, NULL, 0);
-                            esp_now_send(mac, (uint8_t*)&cmd, sizeof(CmdMessage));
+                            esp_now_add_peer(mac_addr, ESP_NOW_ROLE_COMBO, 1, NULL, 0);
+                            esp_now_send(mac_addr, (uint8_t*)&cmd, sizeof(CmdMessage));
                             
                             Serial.printf("Sent CMD to %s: type=%d, value=%s\n", 
                                         devName, cmdType, cmdValue ? "ON" : "OFF");
@@ -306,20 +417,63 @@ void loop() {
                 logToBoth("JSON parse error on swSerial/Serial: " + String(error.c_str()));
             }
         }
+}
+
+void loop() {
+    // Process any incoming messages from the buffer
+    processBuffer();
+
+    if (otaMode) {
+        ArduinoOTA.handle();
+        client.loop(); // MQTT Loop
+        if (isOTAUpdating) return;
     }
 
-    if (inMaintenanceMode) {
+    // Handle commands from Transmitter via swSerial or Serial
+    if (swSerial.available() || Serial.available()) {
+        Stream& input = swSerial.available() ? static_cast<Stream&>(swSerial) : static_cast<Stream&>(Serial);
+        String line = input.readStringUntil('\n');
+        processCommand(line);
+    }
+
+    if (otaMode) {
         static bool wifiInit = false;
         if (!wifiInit) {
             WiFiManager wm;
             wm.setDebugOutput(false);
-            // Set a short timeout for the config portal if needed, 
-            // but for maintenance mode we probably want it to stay open until configured.
-            logToBoth("Gateway: Starting Config Portal 'ESP-NOW-GATEWAY-OTA'...");
+            
+            // Custom MQTT parameters
+            WiFiManagerParameter custom_mqtt_server("server", "mqtt server", mqtt_server, 40);
+            WiFiManagerParameter custom_mqtt_port("port", "mqtt port", mqtt_port, 6);
+            WiFiManagerParameter custom_mqtt_user("user", "mqtt user", mqtt_user, 32);
+            WiFiManagerParameter custom_mqtt_pass("pass", "mqtt pass", mqtt_pass, 32);
+
+            wm.addParameter(&custom_mqtt_server);
+            wm.addParameter(&custom_mqtt_port);
+            wm.addParameter(&custom_mqtt_user);
+            wm.addParameter(&custom_mqtt_pass);
+
+            // Set save config callback
+            wm.setSaveConfigCallback([]() {
+                // We will save in the loop after param read, or just here. 
+                // However, wm variables need to be copied back.
+                // We'll rely on reading them back after autoConnect returns.
+            });
+
+            logToBoth("Gateway: Connecting to WiFi for OTA/MQTT...");
+            
+            // Only use config portal if autoconnect fails
             if (!wm.autoConnect("ESP-NOW-GATEWAY-OTA")) {
-                logToBoth("Failed to connect or timed out. Staying in maintenance mode.");
+                logToBoth("Failed to connect or timed out. Staying in ota mode.");
             } else {
                 logToBoth("WiFi Connected! IP: " + WiFi.localIP().toString());
+                
+                // Read updated parameters
+                strcpy(mqtt_server, custom_mqtt_server.getValue());
+                strcpy(mqtt_port, custom_mqtt_port.getValue());
+                strcpy(mqtt_user, custom_mqtt_user.getValue());
+                strcpy(mqtt_pass, custom_mqtt_pass.getValue());
+                saveConfig();
             }
             wifiInit = true;
         }
@@ -327,7 +481,12 @@ void loop() {
         if (WiFi.status() == WL_CONNECTED) {
             static bool servicesStarted = false;
             if (!servicesStarted) {
+                // Setup MQTT
+                client.setServer(mqtt_server, atoi(mqtt_port));
+                client.setCallback(callback);
+
                 ArduinoOTA.setHostname("espnow-gateway");
+
 
                 ArduinoOTA.onStart([]() {
                     isOTAUpdating = true;
@@ -355,7 +514,6 @@ void loop() {
                 servicesStarted = true;
             }
             
-            // Handle Telnet
             if (telnetServer.hasClient()) {
                 WiFiClient newClient = telnetServer.accept();
                 if (!telnetClient || !telnetClient.connected()) {
@@ -365,6 +523,11 @@ void loop() {
                 } else {
                     newClient.stop();
                 }
+            }
+            
+            // Ensure MQTT is connected
+            if (!client.connected()) {
+                reconnectMqtt();
             }
         }
     }
