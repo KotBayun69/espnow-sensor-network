@@ -168,6 +168,7 @@ typedef struct __attribute__((packed)) struct_config_message {
     bool hasBattery;
     bool hasBinary;
     bool hasAnalog;
+    uint16_t sleepInterval;
 } ConfigMessage;
 
 typedef struct __attribute__((packed)) struct_data_message {
@@ -281,6 +282,7 @@ void processBuffer() {
             doc["hasBattery"] = config.hasBattery;
             doc["hasBinary"] = config.hasBinary;
             doc["hasAnalog"] = config.hasAnalog;
+            doc["sleepInterval"] = config.sleepInterval;
         } 
         else if (type == MSG_DATA && item.len >= sizeof(DataMessage)) {
             DataMessage data;

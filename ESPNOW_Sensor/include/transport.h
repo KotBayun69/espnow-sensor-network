@@ -23,6 +23,7 @@ typedef struct __attribute__((packed)) struct_config_message {
     bool hasBattery;
     bool hasBinary;
     bool hasAnalog;
+    uint16_t sleepInterval;
 } ConfigMessage;
 
 typedef struct __attribute__((packed)) struct_data_message {

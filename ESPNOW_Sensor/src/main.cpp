@@ -238,6 +238,7 @@ void setup() {
     configMsg.hasBattery = true;
     configMsg.hasBinary = readings.validBinary;
     configMsg.hasAnalog = readings.validAnalog;
+    configMsg.sleepInterval = TIME_TO_SLEEP;
 
     sendConfigMessage(configMsg);
     delay(100); // Wait for send callback

@@ -299,6 +299,12 @@ void publishDiscoveryWithMac(const JsonVariantConst& config, const char* macAddr
         return;
     }
     
+    // Calculate dynamic expire_after
+    // Default to 60s if not provided (fallback)
+    int sleepInterval = config["sleepInterval"] | 15; 
+    // Allow for ~3 missed intervals before marking unavailable + buffer
+    int expireAfter = (sleepInterval * 3) + 20;
+    
     String discoveryTopic = String("homeassistant/device/") + deviceName + "/config";
     
     // Build discovery payload with abbreviated keys to reduce size
@@ -334,6 +340,7 @@ void publishDiscoveryWithMac(const JsonVariantConst& config, const char* macAddr
         temp["stat_cla"] = "measurement";
         temp["unit_of_meas"] = "\u00b0C";
         temp["val_tpl"] = "{{ value_json.temperature | round(1) }}";
+        temp["exp_aft"] = expireAfter;
         
         // Humidity sensor
         JsonObject hum = components.createNestedObject("humidity");
@@ -344,6 +351,7 @@ void publishDiscoveryWithMac(const JsonVariantConst& config, const char* macAddr
         hum["stat_cla"] = "measurement";
         hum["unit_of_meas"] = "%";
         hum["val_tpl"] = "{{ value_json.humidity | round(1) }}";
+        hum["exp_aft"] = expireAfter;
         
         // Pressure sensor
         JsonObject press = components.createNestedObject("pressure");
@@ -354,6 +362,7 @@ void publishDiscoveryWithMac(const JsonVariantConst& config, const char* macAddr
         press["stat_cla"] = "measurement";
         press["unit_of_meas"] = "hPa";
         press["val_tpl"] = "{{ value_json.pressure | round(1) }}";
+        press["exp_aft"] = expireAfter;
     }
 
     if (config["hasBH1750"]) {
@@ -366,6 +375,7 @@ void publishDiscoveryWithMac(const JsonVariantConst& config, const char* macAddr
         light["stat_cla"] = "measurement";
         light["unit_of_meas"] = "lx";
         light["val_tpl"] = "{{ value_json.lux | round(0) }}";
+        light["exp_aft"] = expireAfter;
     }
     
     if (config["hasBattery"]) {
@@ -378,6 +388,7 @@ void publishDiscoveryWithMac(const JsonVariantConst& config, const char* macAddr
         battery["stat_cla"] = "measurement";
         battery["unit_of_meas"] = "V";
         battery["val_tpl"] = "{{ value_json.batteryVoltage | round(2) }}";
+        battery["exp_aft"] = expireAfter;
     }
 
     if (config["hasBinary"]) {
@@ -388,6 +399,7 @@ void publishDiscoveryWithMac(const JsonVariantConst& config, const char* macAddr
         binary["name"] = "Door";
         binary["dev_cla"] = "door";
         binary["val_tpl"] = "{{ 'ON' if value_json.binaryState else 'OFF' }}";
+        binary["exp_aft"] = expireAfter;
     }
 
     if (config["hasAnalog"]) {
@@ -400,6 +412,7 @@ void publishDiscoveryWithMac(const JsonVariantConst& config, const char* macAddr
         analog["stat_cla"] = "measurement";
         analog["unit_of_meas"] = "V";
         analog["val_tpl"] = "{{ value_json.analogValue | round(2) }}";
+        analog["exp_aft"] = expireAfter;
     }
     
     // Serialize and publish
