@@ -93,6 +93,31 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
             logToBoth("Relaying control request to Gateway: " + String(message));
             serializeJson(doc, swSerial);
             swSerial.println();
+            
+            // Check if this is an OTA command for the Transmitter itself
+            if (doc.containsKey("device") && strcmp(doc["device"], "transmitter") == 0) {
+               if (doc.containsKey("ota") && strcmp(doc["ota"], "on") == 0) {
+                   logToBoth("Transmitter OTA requested via MQTT");
+                   ArduinoOTA.begin();
+                   
+                   // Publish OTA status immediately
+                   StaticJsonDocument<128> statusDoc;
+                   statusDoc["connection"] = WiFi.localIP().toString();
+                   statusDoc["status"] = "ota";
+                   char buffer[128];
+                   serializeJson(statusDoc, buffer);
+                   client.publish("espnow/transmitter/status", buffer);
+               } else if (doc.containsKey("ota") && strcmp(doc["ota"], "off") == 0) {
+                   logToBoth("Transmitter OTA OFF requested via MQTT");
+                   // Publish online status
+                   StaticJsonDocument<128> statusDoc;
+                   statusDoc["connection"] = WiFi.localIP().toString();
+                   statusDoc["status"] = "online";
+                   char buffer[128];
+                   serializeJson(statusDoc, buffer);
+                   client.publish("espnow/transmitter/status", buffer);
+               }
+            }
         } else {
             logToBoth("JSON parse error on control topic: " + String(error.c_str()));
         }
@@ -117,6 +142,15 @@ void reconnect() {
         // Subscribe to control topics
         client.subscribe("espnow/control");
         logToBoth("Subscribed to espnow/control");
+        
+        // Publish online status
+        StaticJsonDocument<128> doc;
+        doc["connection"] = WiFi.localIP().toString();
+        doc["status"] = "online"; 
+        char buffer[128];
+        serializeJson(doc, buffer);
+        client.publish("espnow/transmitter/status", buffer);
+        logToBoth("Published status: " + String(buffer));
     } else {
         logToBoth("failed, rc=" + String(client.state()) + " will try again in 5s");
     }
@@ -183,6 +217,44 @@ void setup() {
 
     // Initialize OTA
     ArduinoOTA.setPort(8266);
+    ArduinoOTA.setHostname("ESPNOW_Transmitter");
+    
+    ArduinoOTA.onStart([]() {
+      String type;
+      if (ArduinoOTA.getCommand() == U_FLASH) {
+        type = "sketch";
+      } else { // U_FS
+        type = "filesystem";
+      }
+      Serial.println("Start updating " + type);
+      isOTAUpdating = true;
+      
+      // Publish OTA status
+      if (client.connected()) {
+        StaticJsonDocument<128> doc;
+        doc["connection"] = WiFi.localIP().toString();
+        doc["status"] = "ota";
+        char buffer[128];
+        serializeJson(doc, buffer);
+        client.publish("espnow/transmitter/status", buffer);
+      }
+    });
+    
+    ArduinoOTA.onEnd([]() {
+      Serial.println("\nEnd");
+      isOTAUpdating = false;
+      
+      // Publish online status
+      if (client.connected()) {
+        StaticJsonDocument<128> doc;
+        doc["connection"] = WiFi.localIP().toString();
+        doc["status"] = "online";
+        char buffer[128];
+        serializeJson(doc, buffer);
+        client.publish("espnow/transmitter/status", buffer);
+      }
+    });
+
     ArduinoOTA.setHostname("espnow-transmitter");
     
     ArduinoOTA.onStart([]() {
@@ -392,7 +464,24 @@ void loop() {
                     const char* deviceName = doc["deviceName"];
                     const char* type = doc["type"];
                     
-                    if (macAddress != nullptr && strlen(macAddress) > 0) {
+                    if (doc.containsKey("device") && strcmp(doc["device"], "gateway") == 0) {
+                        // Gateway Status Message
+                        String topic = String(mqtt_topic_base) + "/gateway/status";
+                        
+                        // Create clean payload without "device" field
+                        StaticJsonDocument<128> cleanDoc;
+                        cleanDoc["connection"] = doc["connection"];
+                        cleanDoc["status"] = doc["status"];
+                        char cleanBuffer[128];
+                        serializeJson(cleanDoc, cleanBuffer);
+                        
+                        if (client.publish(topic.c_str(), cleanBuffer)) {
+                             logToBoth("Published Gateway status to: " + topic);
+                        } else {
+                             logToBoth("Failed to publish Gateway status");
+                        }
+                    } else if (macAddress != nullptr && strlen(macAddress) > 0) {
+                        // Standard Sensor Message
                         // Check if this is a CONFIG message - trigger discovery
                         if (type != nullptr && strcmp(type, "CONFIG") == 0 && deviceName != nullptr) {
                             logToBoth("CONFIG message received for device: " + String(deviceName) + " (MAC: " + String(macAddress) + ")");
@@ -411,7 +500,7 @@ void loop() {
                             logToBoth("Failed to publish to MQTT");
                         }
                     } else {
-                        logToBoth("Error: MAC address not found in JSON, skipping MQTT publish");
+                        logToBoth("Error: MAC address not found in JSON (and not gateway status), skipping MQTT publish");
                     }
                 } else {
                     logToBoth("JSON parse error: " + String(error.c_str()));

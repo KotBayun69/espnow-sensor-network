@@ -112,12 +112,13 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
           
           // Publish online status before leaving
           StaticJsonDocument<128> statusDoc;
-          statusDoc["device"] = DEVICE_NAME;
-          statusDoc["ip"] = "WiFi.localIP().toString()";
+          statusDoc["connection"] = "espnow";
           statusDoc["status"] = "online";
           char buffer[128];
           serializeJson(statusDoc, buffer);
-          mqttClient.publish("espnow/status", buffer);
+          
+          String statusTopic = "espnow/" + WiFi.macAddress() + "/status";
+          mqttClient.publish(statusTopic.c_str(), buffer);
           
           // Give time for message to send
           delay(500); 
@@ -173,13 +174,14 @@ void mqttReconnect() {
       
       // Publish status
       StaticJsonDocument<128> statusDoc;
-      statusDoc["device"] = DEVICE_NAME;
-      statusDoc["ip"] = WiFi.localIP().toString();
+      statusDoc["connection"] = WiFi.localIP().toString();
       statusDoc["status"] = "ota";
       char buffer[128];
       serializeJson(statusDoc, buffer);
-      mqttClient.publish("espnow/status", buffer);
-      logToBoth("✓ Published status: " + String(buffer));
+      
+      String statusTopic = "espnow/" + WiFi.macAddress() + "/status";
+      mqttClient.publish(statusTopic.c_str(), buffer);
+      logToBoth("✓ Published status to " + statusTopic + ": " + String(buffer));
     } else {
       int state = mqttClient.state();
       String error = "✗ MQTT connection failed, rc=";

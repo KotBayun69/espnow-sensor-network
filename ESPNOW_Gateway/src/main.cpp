@@ -15,6 +15,7 @@ bool otaMode = false;
 WiFiServer telnetServer(23);
 WiFiClient telnetClient;
 bool isOTAUpdating = false;
+bool otaStatusSent = false;
 
 // MQTT Configuration
 char mqtt_server[40];
@@ -370,8 +371,19 @@ void processCommand(String line) {
                             if (strcmp(value, "on") == 0) {
                                 logToBoth("Gateway entering OTA/MAINTENANCE mode...");
                                 otaMode = true;
+                                otaStatusSent = false;
                             } else {
                                 logToBoth("Gateway exiting OTA mode (rebooting)...");
+                                // Send status to Transmitter
+                                StaticJsonDocument<128> statusDoc;
+                                statusDoc["device"] = "gateway";
+                                statusDoc["connection"] = "espnow";
+                                statusDoc["status"] = "online";
+                                String json;
+                                serializeJson(statusDoc, json);
+                                logToBoth(json);
+                                swSerial.println(json); // Send to Transmitter
+                                
                                 delay(100);
                                 ESP.restart();
                             }
@@ -528,6 +540,19 @@ void loop() {
             // Ensure MQTT is connected
             if (!client.connected()) {
                 reconnectMqtt();
+            }
+
+            // Send deferred OTA status to Transmitter once connected
+            if (!otaStatusSent) {
+                 StaticJsonDocument<128> statusDoc;
+                 statusDoc["device"] = "gateway";
+                 statusDoc["connection"] = WiFi.localIP().toString();
+                 statusDoc["status"] = "ota";
+                 String json;
+                 serializeJson(statusDoc, json);
+                 logToBoth(json); 
+                 swSerial.println(json);
+                 otaStatusSent = true;
             }
         }
     }
