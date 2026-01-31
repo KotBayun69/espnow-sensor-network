@@ -5,6 +5,7 @@ uint8_t gatewayAddress[] = {0xC4, 0x5B, 0xBE, 0x61, 0x86, 0x09};
 
 esp_now_peer_info_t peerInfo;
 static bool otaRequested = false;
+static bool ackReceived = false;
 
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
     if (len == 0) return;
@@ -13,6 +14,7 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
     
     if (msgType == MSG_ACK && len >= sizeof(AckMessage)) {
         Serial.println("ACK received");
+        ackReceived = true;
     }
     else if (msgType == MSG_CMD && len >= sizeof(CmdMessage)) {
         CmdMessage cmd;
@@ -95,4 +97,16 @@ bool sendDataMessage(DataMessage msg) {
 
 bool isOtaRequested() {
     return otaRequested;
+}
+
+void clearOtaRequest() {
+    otaRequested = false;
+}
+
+bool hasAckBeenReceived() {
+    return ackReceived;
+}
+
+void clearAckFlag() {
+    ackReceived = false;
 }

@@ -11,8 +11,12 @@
 #define uS_TO_S_FACTOR 1000000ULL  /* Conversion factor for micro seconds to seconds */
 #define TIME_TO_SLEEP  15          /* Time ESP32 will go to sleep (in seconds) */
 
+// Device configuration
+#define CURRENT_DEVICE_TYPE DEV_PLANT 
+#define IS_BATTERY_POWERED true
 // Save state in RTC memory so it survives deep sleep
 RTC_DATA_ATTR int bootCount = 0;
+RTC_DATA_ATTR bool isRegistered = false;
 
 bool otaMode = false;
 WiFiServer telnetServer(23);
@@ -99,46 +103,60 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   StaticJsonDocument<256> doc;
   DeserializationError error = deserializeJson(doc, payload, length);
   
-  if (!error && doc.containsKey("device")) {
+  if (error) return;
+
+  bool isTarget = false;
+  if (doc.containsKey("device")) {
     const char* devName = doc["device"];
-    
-    // Check if command is for this device
     if (strcmp(devName, DEVICE_NAME) == 0) {
-      // Check for ota command
-      if (doc.containsKey("ota")) {
-        const char* otaCmd = doc["ota"];
-        if (strcmp(otaCmd, "off") == 0) {
-          logToBoth("MQTT: OTA mode OFF - publishing status and entering deep sleep");
-          
-          // Publish online status before leaving
-          StaticJsonDocument<128> statusDoc;
-          statusDoc["connection"] = "espnow";
-          statusDoc["status"] = "online";
-          char buffer[128];
-          serializeJson(statusDoc, buffer);
-          
-          String statusTopic = "espnow/" + WiFi.macAddress() + "/status";
-          mqttClient.publish(statusTopic.c_str(), buffer);
-          
-          // Give time for message to send
-          delay(500); 
-          mqttClient.disconnect();
-          delay(100);
-          
-          // Go directly to deep sleep
+      isTarget = true;
+    }
+  } else {
+    // If we are in OTA mode and receive an OTA command without device name, 
+    // assume it might be for us (broadcast or direct to our IP)
+    if (otaMode && doc.containsKey("ota")) {
+      isTarget = true;
+    }
+  }
+    
+  if (isTarget) {
+    // Check for ota command
+    if (doc.containsKey("ota")) {
+      const char* otaCmd = doc["ota"];
+      if (strcmp(otaCmd, "off") == 0) {
+        logToBoth("MQTT: OTA mode OFF - publishing status and returning to normal...");
+        
+        // Publish status
+        StaticJsonDocument<128> statusDoc;
+        statusDoc["connection"] = "espnow";
+        statusDoc["status"] = "online";
+        char buffer[128];
+        serializeJson(statusDoc, buffer);
+        String statusTopic = "espnow/" + WiFi.macAddress() + "/status";
+        mqttClient.publish(statusTopic.c_str(), buffer);
+        
+        delay(500); 
+        mqttClient.disconnect();
+        delay(100);
+        
+        if (IS_BATTERY_POWERED) {
+          logToBoth("Entering deep sleep...");
           esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
           esp_deep_sleep_start();
-        }
-      }
-      
-      // Check for restart command
-      if (doc.containsKey("restart")) {
-        const char* restartCmd = doc["restart"];
-        if (strcmp(restartCmd, "on") == 0) {
-          logToBoth("MQTT: Restart requested");
-          delay(100);
+        } else {
+          logToBoth("Restarting...");
           ESP.restart();
         }
+      }
+    }
+    
+    // Check for restart command
+    if (doc.containsKey("restart")) {
+      const char* restartCmd = doc["restart"];
+      if (strcmp(restartCmd, "on") == 0) {
+        logToBoth("MQTT: Restart requested");
+        delay(100);
+        ESP.restart();
       }
     }
   }
@@ -210,64 +228,10 @@ void mqttReconnect() {
 }
 
 
-void setup() {
-  Serial.begin(115200);
-  delay(100);
-  Serial.println("\n\n=== SENSOR BOOT ===");
-  bootCount++;
-  Serial.printf("Boot #%d\n", bootCount);
-
-  // Load MQTT config
-  loadMqttConfig();
-
-  // Initialize
-  initSensors();
-  initTransport();
-
-  // Send Config on first boot
-  if (bootCount == 1) {
-    Serial.println("First boot - sending Config...");
-    ConfigMessage configMsg;
-    configMsg.type = MSG_CONFIG;
-    WiFi.macAddress(configMsg.macAddr);
-    strcpy(configMsg.deviceName, DEVICE_NAME);
-    
-    SensorReadings readings = readSensors();
-    configMsg.hasBME = readings.validBME;
-    configMsg.hasBH1750 = readings.validBH1750;
-    configMsg.hasBattery = true;
-    configMsg.hasBinary = readings.validBinary;
-    configMsg.hasAnalog = readings.validAnalog;
-    configMsg.sleepInterval = TIME_TO_SLEEP;
-
-    sendConfigMessage(configMsg);
-    delay(100); // Wait for send callback
-  }
-
-  // Read and send data
-  Serial.println("Reading sensors...");
-  SensorReadings readings = readSensors();
-  Serial.printf("T=%.2f°C, H=%.2f%%, P=%.2f hPa, Lux=%.2f, Batt=%.2fV\n",
-                readings.temperature, readings.humidity, readings.pressure, 
-                readings.lux, readings.batteryVoltage);
-
-  DataMessage dataMsg;
-  dataMsg.type = MSG_DATA;
-  dataMsg.temperature = readings.temperature;
-  dataMsg.humidity = readings.humidity;
-  dataMsg.pressure = readings.pressure;
-  dataMsg.lux = readings.lux;
-  dataMsg.batteryVoltage = readings.batteryVoltage;
-  dataMsg.binaryState = readings.binaryState;
-  dataMsg.analogValue = readings.analogValue;
-
-  sendDataMessage(dataMsg);
-  delay(500); // Wait for send callback and potential CMD response
-
-  // Check if OTA was requested
-  if (isOtaRequested()) {
+void enterOtaMode() {
     logToBoth("Entering OTA Mode...");
     otaMode = true;
+    clearOtaRequest(); // Reset the flag once we've entered the mode
     
     // WiFiManager with custom MQTT parameters
     WiFiManagerParameter custom_mqtt_server("server", "MQTT Server", mqtt_server, 40);
@@ -311,6 +275,7 @@ void setup() {
       } else {
         logToBoth("✗ Portal also failed. Entering deep sleep.");
         otaMode = false;
+        return;
       }
     }
 
@@ -374,11 +339,10 @@ void setup() {
     if (!mqttConnected && otaMode) {
       logToBoth("✗ Cannot establish MQTT. Entering deep sleep.");
       otaMode = false;
+      return;
     }
 
     if (otaMode) {
-
-      
       ArduinoOTA.setHostname(DEVICE_NAME);
       ArduinoOTA.onStart([]() {
         isOTAUpdating = true;
@@ -397,15 +361,137 @@ void setup() {
       telnetServer.begin();
       logToBoth("OTA Ready. Telnet Ready. MQTT subscribed to espnow/control");
     }
+}
+
+bool ensureRegistered() {
+  if (otaMode) return true;
+
+  if (!isRegistered || bootCount % 100 == 0) {
+    Serial.println(isRegistered ? "--- Refreshing Registration ---" : "--- Device Registration Required ---");
+    
+    ConfigMessage configMsg;
+    memset(&configMsg, 0, sizeof(configMsg));
+    configMsg.type = MSG_CONFIG;
+    configMsg.deviceType = CURRENT_DEVICE_TYPE;
+    configMsg.isBatteryPowered = IS_BATTERY_POWERED;
+    WiFi.macAddress(configMsg.macAddr);
+    strcpy(configMsg.deviceName, DEVICE_NAME);
+    
+    if (CURRENT_DEVICE_TYPE == DEV_PLANT) {
+        configMsg.config.plant.sleepInterval = TIME_TO_SLEEP;
+    } else if (CURRENT_DEVICE_TYPE == DEV_ENVIRO_MOTION) {
+        configMsg.config.enviro.sleepInterval = TIME_TO_SLEEP;
+        configMsg.config.enviro.motionTimeout = 30;
+    } else if (CURRENT_DEVICE_TYPE == DEV_BINARY) {
+        configMsg.config.binary.sleepInterval = TIME_TO_SLEEP;
+    }
+
+    for (int i = 0; i < 3; i++) {
+        clearAckFlag();
+        Serial.printf("Sending Config (Attempt %d/3)...\n", i+1);
+        sendConfigMessage(configMsg);
+        
+        unsigned long start = millis();
+        while (millis() - start < 300 && !hasAckBeenReceived()) {
+            delay(10);
+        }
+        
+        if (hasAckBeenReceived()) {
+            Serial.println("✓ Gateway Acknowledged Config");
+            isRegistered = true;
+            return true;
+        }
+        Serial.println("✗ Config ACK timeout...");
+    }
+    
+    Serial.println("⚠ Registration failed. Will retry on next data attempt.");
+    return false;
+  }
+  return true;
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(100);
+  Serial.println("\n\n=== SENSOR BOOT ===");
+  bootCount++;
+  Serial.printf("Boot #%d\n", bootCount);
+
+  // Load MQTT config
+  loadMqttConfig();
+
+  // Initialize hardware and transport
+  initSensors(CURRENT_DEVICE_TYPE, IS_BATTERY_POWERED);
+  initTransport();
+
+  // Ensure registration before sending data
+  ensureRegistered();
+
+  // Read and send data
+  Serial.println("Reading sensors...");
+  SensorReadings readings = readSensors(CURRENT_DEVICE_TYPE, IS_BATTERY_POWERED);
+  
+  if (CURRENT_DEVICE_TYPE == DEV_PLANT) {
+      Serial.printf("Plant: T=%.2f°C, H=%.2f%%, Lux=%.2f, Moist=%.2f%%, Batt=%.2fV\n",
+                    readings.data.plant.temperature, readings.data.plant.humidity, 
+                    readings.data.plant.lux, readings.data.plant.soilMoisture, readings.batteryVoltage);
+  } else if (CURRENT_DEVICE_TYPE == DEV_ENVIRO_MOTION) {
+      Serial.printf("Enviro: T=%.2f°C, Motion=%d, Dist=%.2f, Batt=%.2fV\n",
+                    readings.data.enviro.temperature, readings.data.enviro.motionDetected,
+                    readings.data.enviro.distance, readings.batteryVoltage);
+  } else if (CURRENT_DEVICE_TYPE == DEV_BINARY) {
+      Serial.printf("Binary: State=%d, Batt=%.2fV\n",
+                    readings.data.binary.state, readings.batteryVoltage);
   }
 
-  if (!otaMode) {
+  DataMessage dataMsg;
+  memset(&dataMsg, 0, sizeof(dataMsg));
+  dataMsg.type = MSG_DATA;
+  dataMsg.deviceType = CURRENT_DEVICE_TYPE;
+  dataMsg.batteryVoltage = readings.batteryVoltage;
+  
+  if (CURRENT_DEVICE_TYPE == DEV_PLANT) {
+      dataMsg.data.plant = readings.data.plant;
+  } else if (CURRENT_DEVICE_TYPE == DEV_ENVIRO_MOTION) {
+      dataMsg.data.enviro = readings.data.enviro;
+  } else if (CURRENT_DEVICE_TYPE == DEV_BINARY) {
+      dataMsg.data.binary = readings.data.binary;
+  }
+  if (isRegistered) {
+      clearAckFlag();
+      sendDataMessage(dataMsg);
+      
+      unsigned long startData = millis();
+      while (millis() - startData < 500 && !hasAckBeenReceived()) {
+          delay(10);
+      }
+
+      if (hasAckBeenReceived()) {
+          Serial.println("✓ Data Acknowledged");
+      } else {
+          Serial.println("✗ Data ACK Timeout! Resetting registration.");
+          isRegistered = false; 
+      }
+  } else {
+      Serial.println("! Skipping data send: Device not registered");
+  }
+  
+  delay(100); 
+
+  // Check if OTA was requested
+  if (isOtaRequested()) {
+    enterOtaMode();
+  }
+
+  if (!otaMode && IS_BATTERY_POWERED) {
     // Go to sleep
     Serial.printf("Going to sleep for %d seconds...\n", TIME_TO_SLEEP);
     Serial.flush();
     
     esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
     esp_deep_sleep_start();
+  } else if (!otaMode && !IS_BATTERY_POWERED) {
+    Serial.println("Running in continuous mode (not battery powered)");
   }
 }
 
@@ -460,5 +546,47 @@ void loop() {
       }
     }
     delay(10);
+  } else if (!IS_BATTERY_POWERED) {
+      // Logic for continuous sensors (e.g., Motion)
+      static unsigned long lastReading = 0;
+      if (millis() - lastReading > 2000) { 
+          lastReading = millis();
+          
+          // Continuous check for registration
+          if (ensureRegistered()) {
+              SensorReadings readings = readSensors(CURRENT_DEVICE_TYPE, IS_BATTERY_POWERED);
+              
+              DataMessage dataMsg;
+              memset(&dataMsg, 0, sizeof(dataMsg));
+              dataMsg.type = MSG_DATA;
+              dataMsg.deviceType = CURRENT_DEVICE_TYPE;
+              dataMsg.batteryVoltage = IS_BATTERY_POWERED ? readings.batteryVoltage : 0.0;
+              
+              if (CURRENT_DEVICE_TYPE == DEV_ENVIRO_MOTION) {
+                  dataMsg.data.enviro = readings.data.enviro;
+              }
+              
+              clearAckFlag();
+              sendDataMessage(dataMsg);
+              
+              unsigned long startData = millis();
+              while (millis() - startData < 500 && !hasAckBeenReceived()) {
+                  delay(10);
+              }
+
+              if (hasAckBeenReceived()) {
+                  Serial.println("✓ Continuous Data acknowledged");
+              } else {
+                  Serial.println("✗ Continuous Data ACK timeout. Force re-registration.");
+                  isRegistered = false;
+              }
+          }
+      }
+          
+          // Check if OTA was requested in the response
+          if (isOtaRequested()) {
+              enterOtaMode();
+          }
+      delay(10);
   }
 }

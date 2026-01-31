@@ -14,31 +14,77 @@
 // Structures must match on both sides (Sensor and Gateway)
 // Use packed attribute to ensure byte alignment
 
-typedef struct __attribute__((packed)) struct_config_message {
-    uint8_t type;
-    uint8_t macAddr[6];
-    char deviceName[32];
-    bool hasBME;
-    bool hasBH1750;
-    bool hasBattery;
-    bool hasBinary;
-    bool hasAnalog;
-    uint16_t sleepInterval;
-} ConfigMessage;
+// Device Types
+enum DeviceType : uint8_t {
+    DEV_PLANT = 1,         // BME + Light + Soil
+    DEV_ENVIRO_MOTION = 2, // BME + Light + LD2410
+    DEV_BINARY = 3         // Door/Binary sensor
+};
 
-typedef struct __attribute__((packed)) struct_data_message {
-    uint8_t type;
+// --- Config Sub-structures ---
+typedef struct __attribute__((packed)) {
+    uint16_t sleepInterval;
+} PlantConfig;
+
+typedef struct __attribute__((packed)) {
+    uint16_t sleepInterval;
+    uint16_t motionTimeout; // Specific to LD2410 or similar
+} EnviroMotionConfig;
+
+typedef struct __attribute__((packed)) {
+    uint16_t sleepInterval; // might be 0 for always-on/interrupt-based
+} BinaryConfig;
+
+// --- Data Sub-structures ---
+typedef struct __attribute__((packed)) {
     float temperature;
     float humidity;
     float pressure;
     float lux;
+    float soilMoisture;
+} PlantData;
+
+typedef struct __attribute__((packed)) {
+    float temperature;
+    float humidity;
+    float pressure;
+    float lux;
+    bool motionDetected;
+    float distance; // Distance to target
+} EnviroMotionData;
+
+typedef struct __attribute__((packed)) {
+    bool state;
+} BinaryData;
+
+// --- Main Messages ---
+
+typedef struct __attribute__((packed)) struct_config_message {
+    uint8_t type;         // MSG_CONFIG
+    uint8_t deviceType;   // DeviceType enum
+    uint8_t macAddr[6];
+    char deviceName[32];
+    bool isBatteryPowered; // Flag to indicate if device should sleep
+    union {
+        PlantConfig plant;
+        EnviroMotionConfig enviro;
+        BinaryConfig binary;
+    } config;
+} ConfigMessage;
+
+typedef struct __attribute__((packed)) struct_data_message {
+    uint8_t type;         // MSG_DATA
+    uint8_t deviceType;   // DeviceType enum
     float batteryVoltage;
-    bool binaryState;
-    float analogValue;
+    union {
+        PlantData plant;
+        EnviroMotionData enviro;
+        BinaryData binary;
+    } data;
 } DataMessage;
 
 typedef struct __attribute__((packed)) struct_ack_message {
-    uint8_t type;
+    uint8_t type;         // MSG_ACK
 } AckMessage;
 
 // Command types for CMD messages
@@ -58,5 +104,8 @@ void initTransport();
 bool sendConfigMessage(ConfigMessage msg);
 bool sendDataMessage(DataMessage msg);
 bool isOtaRequested();  // Check if OTA mode was requested via CMD
+void clearOtaRequest(); // Clear the flag
+bool hasAckBeenReceived(); // Check if MSG_ACK was received
+void clearAckFlag();       // Reset the ACK flag
 
 #endif

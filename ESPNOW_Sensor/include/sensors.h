@@ -1,23 +1,19 @@
 #ifndef SENSORS_H
 #define SENSORS_H
 
+#include "transport.h"
+
 struct SensorReadings {
-    bool validBME;
-    float temperature;
-    float humidity;
-    float pressure;
-
-    bool validBH1750;
-    float lux;
-
+    uint8_t deviceType;
     float batteryVoltage;
-    bool validBinary;
-    bool binaryState; // e.g. Door
-    bool validAnalog;
-    float analogValue; // e.g. Soil
+    union {
+        PlantData plant;
+        EnviroMotionData enviro;
+        BinaryData binary;
+    } data;
 };
 
-void initSensors();
-SensorReadings readSensors();
+void initSensors(uint8_t deviceType, bool isBatteryPowered);
+SensorReadings readSensors(uint8_t deviceType, bool isBatteryPowered);
 
 #endif

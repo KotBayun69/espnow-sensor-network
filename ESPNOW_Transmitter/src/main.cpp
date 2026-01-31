@@ -9,6 +9,13 @@
 #include <map>
 #include <vector>
 
+// Device Types
+enum DeviceType : uint8_t {
+    DEV_PLANT = 1,         // BME + Light + Soil
+    DEV_ENVIRO_MOTION = 2, // BME + Light + LD2410
+    DEV_BINARY = 3         // Door/Binary sensor
+};
+
 WiFiServer telnetServer(23);
 WiFiClient telnetClient;
 bool isOTAUpdating = false;
@@ -299,18 +306,26 @@ void publishDiscoveryWithMac(const JsonVariantConst& config, const char* macAddr
         return;
     }
     
+    int deviceType = config["deviceType"] | 0;
+    bool isBatteryPowered = config["isBatteryPowered"] | true;
+    
     // Calculate dynamic expire_after
-    // Default to 60s if not provided (fallback)
     int sleepInterval = config["sleepInterval"] | 15; 
-    // Allow for ~3 missed intervals before marking unavailable + buffer
-    int expireAfter = (sleepInterval * 3) + 20;
+    int expireAfter;
+    if (isBatteryPowered) {
+        // Allow for ~3 missed intervals before marking unavailable + buffer
+        expireAfter = (sleepInterval * 3) + 20;
+    } else {
+        // Continuous mode: send data every 2s, so expire after 10s
+        expireAfter = 10; 
+    }
     
     String discoveryTopic = String("homeassistant/device/") + deviceName + "/config";
     
-    // Build discovery payload with abbreviated keys to reduce size
-    DynamicJsonDocument doc(3072); // Increased size for more sensors
+    // Build discovery payload with abbreviated keys
+    DynamicJsonDocument doc(4096); 
     
-    // Device information (abbreviated)
+    // Device information
     JsonObject device = doc.createNestedObject("dev");
     JsonArray identifiers = device.createNestedArray("ids");
     identifiers.add(deviceName);
@@ -318,19 +333,27 @@ void publishDiscoveryWithMac(const JsonVariantConst& config, const char* macAddr
     device["mdl"] = "ESP-NOW Device";
     device["mf"] = "Sergey Inc.";
     
-    // Origin information (abbreviated)
     JsonObject origin = doc.createNestedObject("o");
     origin["name"] = "ESP-NOW Gateway";
     origin["sw"] = "1.0";
     
-    // State topic uses MAC address (always available)
     doc["stat_t"] = String(mqtt_topic_base) + "/" + macAddress + "/state";
-    
-    // Components (conditional sensors) - abbreviated keys
     JsonObject components = doc.createNestedObject("cmps");
     
-    // Temperature and Humidity usually go together with BME
-    if (config["hasBME"]) {
+    if (isBatteryPowered) {
+        // Battery sensor
+        JsonObject battery = components.createNestedObject("battery");
+        battery["p"] = "sensor";
+        battery["uniq_id"] = String(deviceName) + "_battery";
+        battery["name"] = "Battery";
+        battery["dev_cla"] = "voltage";
+        battery["stat_cla"] = "measurement";
+        battery["unit_of_meas"] = "V";
+        battery["val_tpl"] = "{{ value_json.batteryVoltage | round(2) }}";
+        battery["exp_aft"] = expireAfter;
+    }
+
+    if (deviceType == DEV_PLANT || deviceType == DEV_ENVIRO_MOTION) {
         // Temperature sensor
         JsonObject temp = components.createNestedObject("temperature");
         temp["p"] = "sensor";
@@ -353,19 +376,6 @@ void publishDiscoveryWithMac(const JsonVariantConst& config, const char* macAddr
         hum["val_tpl"] = "{{ value_json.humidity | round(1) }}";
         hum["exp_aft"] = expireAfter;
         
-        // Pressure sensor
-        JsonObject press = components.createNestedObject("pressure");
-        press["p"] = "sensor";
-        press["uniq_id"] = String(deviceName) + "_pressure";
-        press["name"] = "Pressure";
-        press["dev_cla"] = "pressure";
-        press["stat_cla"] = "measurement";
-        press["unit_of_meas"] = "hPa";
-        press["val_tpl"] = "{{ value_json.pressure | round(1) }}";
-        press["exp_aft"] = expireAfter;
-    }
-
-    if (config["hasBH1750"]) {
         // Light sensor
         JsonObject light = components.createNestedObject("light");
         light["p"] = "sensor";
@@ -377,21 +387,41 @@ void publishDiscoveryWithMac(const JsonVariantConst& config, const char* macAddr
         light["val_tpl"] = "{{ value_json.lux | round(0) }}";
         light["exp_aft"] = expireAfter;
     }
-    
-    if (config["hasBattery"]) {
-        // Battery sensor
-        JsonObject battery = components.createNestedObject("battery");
-        battery["p"] = "sensor";
-        battery["uniq_id"] = String(deviceName) + "_battery";
-        battery["name"] = "Battery";
-        battery["dev_cla"] = "voltage";
-        battery["stat_cla"] = "measurement";
-        battery["unit_of_meas"] = "V";
-        battery["val_tpl"] = "{{ value_json.batteryVoltage | round(2) }}";
-        battery["exp_aft"] = expireAfter;
+
+    if (deviceType == DEV_PLANT) {
+        // Soil Moisture sensor
+        JsonObject soil = components.createNestedObject("soil");
+        soil["p"] = "sensor";
+        soil["uniq_id"] = String(deviceName) + "_soil";
+        soil["name"] = "Soil Moisture";
+        soil["stat_cla"] = "measurement";
+        soil["unit_of_meas"] = "%";
+        soil["val_tpl"] = "{{ value_json.soilMoisture | round(1) }}";
+        soil["exp_aft"] = expireAfter;
     }
 
-    if (config["hasBinary"]) {
+    if (deviceType == DEV_ENVIRO_MOTION) {
+        // Motion sensor
+        JsonObject motion = components.createNestedObject("motion");
+        motion["p"] = "binary_sensor";
+        motion["uniq_id"] = String(deviceName) + "_motion";
+        motion["name"] = "Motion";
+        motion["dev_cla"] = "motion";
+        motion["val_tpl"] = "{{ 'ON' if value_json.motionDetected else 'OFF' }}";
+        motion["exp_aft"] = expireAfter;
+
+        // Distance sensor
+        JsonObject dist = components.createNestedObject("distance");
+        dist["p"] = "sensor";
+        dist["uniq_id"] = String(deviceName) + "_distance";
+        dist["name"] = "Distance";
+        dist["stat_cla"] = "measurement";
+        dist["unit_of_meas"] = "cm";
+        dist["val_tpl"] = "{{ value_json.distance | round(1) }}";
+        dist["exp_aft"] = expireAfter;
+    }
+    
+    if (deviceType == DEV_BINARY) {
         // Binary sensor (e.g. Door)
         JsonObject binary = components.createNestedObject("door");
         binary["p"] = "binary_sensor";
@@ -400,19 +430,6 @@ void publishDiscoveryWithMac(const JsonVariantConst& config, const char* macAddr
         binary["dev_cla"] = "door";
         binary["val_tpl"] = "{{ 'ON' if value_json.binaryState else 'OFF' }}";
         binary["exp_aft"] = expireAfter;
-    }
-
-    if (config["hasAnalog"]) {
-        // Analog sensor (e.g. Soil Moisture)
-        JsonObject analog = components.createNestedObject("soil");
-        analog["p"] = "sensor";
-        analog["uniq_id"] = String(deviceName) + "_soil";
-        analog["name"] = "Soil Moisture";
-        analog["dev_cla"] = "voltage"; // Or measurement if generic
-        analog["stat_cla"] = "measurement";
-        analog["unit_of_meas"] = "V";
-        analog["val_tpl"] = "{{ value_json.analogValue | round(2) }}";
-        analog["exp_aft"] = expireAfter;
     }
     
     // Serialize and publish

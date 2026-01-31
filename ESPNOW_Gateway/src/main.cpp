@@ -115,13 +115,10 @@ std::map<String, std::vector<uint8_t>> deviceMacs;
 // OTA request tracking: store device names that should stay awake
 std::map<String, bool> stayAwakeState;
 
-enum MessageType {
-    MSG_CONFIG = 1,
-    MSG_DATA = 2,
-    MSG_ACK = 3,
-    MSG_CMD = 4
-};
-
+#define MSG_CONFIG 1
+#define MSG_DATA   2
+#define MSG_ACK    3
+#define MSG_CMD    4
 
 // Command types for CMD messages
 enum CmdType {
@@ -146,41 +143,84 @@ uint8_t getCmdType(const char* cmdName) {
     return 0; // Unknown command
 }
 
-
-typedef struct __attribute__((packed)) struct_ack_message {
-    uint8_t type;
-} AckMessage;
-
 typedef struct __attribute__((packed)) struct_cmd_message {
     uint8_t type;      // MSG_CMD (always 4)
     uint8_t cmdType;   // Which command (CMD_OTA, CMD_RESTART, etc.)
     bool value;        // Command state (true/false, on/off)
 } CmdMessage;
 
+// Device Types
+enum DeviceType : uint8_t {
+    DEV_PLANT = 1,         // BME + Light + Soil
+    DEV_ENVIRO_MOTION = 2, // BME + Light + LD2410
+    DEV_BINARY = 3         // Door/Binary sensor
+};
 
-
-typedef struct __attribute__((packed)) struct_config_message {
-    uint8_t type;
-    uint8_t macAddr[6];
-    char deviceName[32];
-    bool hasBME;
-    bool hasBH1750;
-    bool hasBattery;
-    bool hasBinary;
-    bool hasAnalog;
+// --- Config Sub-structures ---
+typedef struct __attribute__((packed)) {
     uint16_t sleepInterval;
-} ConfigMessage;
+} PlantConfig;
 
-typedef struct __attribute__((packed)) struct_data_message {
-    uint8_t type;
+typedef struct __attribute__((packed)) {
+    uint16_t sleepInterval;
+    uint16_t motionTimeout;
+} EnviroMotionConfig;
+
+typedef struct __attribute__((packed)) {
+    uint16_t sleepInterval;
+} BinaryConfig;
+
+// --- Data Sub-structures ---
+typedef struct __attribute__((packed)) {
     float temperature;
     float humidity;
     float pressure;
     float lux;
+    float soilMoisture;
+} PlantData;
+
+typedef struct __attribute__((packed)) {
+    float temperature;
+    float humidity;
+    float pressure;
+    float lux;
+    bool motionDetected;
+    float distance;
+} EnviroMotionData;
+
+typedef struct __attribute__((packed)) {
+    bool state;
+} BinaryData;
+
+// --- Main Messages ---
+
+typedef struct __attribute__((packed)) struct_config_message {
+    uint8_t type;         // MSG_CONFIG
+    uint8_t deviceType;   // DeviceType enum
+    uint8_t macAddr[6];
+    char deviceName[32];
+    bool isBatteryPowered;
+    union {
+        PlantConfig plant;
+        EnviroMotionConfig enviro;
+        BinaryConfig binary;
+    } config;
+} ConfigMessage;
+
+typedef struct __attribute__((packed)) struct_data_message {
+    uint8_t type;         // MSG_DATA
+    uint8_t deviceType;   // DeviceType enum
     float batteryVoltage;
-    bool binaryState;
-    float analogValue;
+    union {
+        PlantData plant;
+        EnviroMotionData enviro;
+        BinaryData binary;
+    } data;
 } DataMessage;
+
+typedef struct __attribute__((packed)) struct_ack_message {
+    uint8_t type;         // MSG_ACK
+} AckMessage;
 
 // --- Buffer Implementation ---
 struct QueueItem {
@@ -216,7 +256,8 @@ void onDataRecv(uint8_t * mac, uint8_t *incomingData, uint8_t len) {
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
     // 1. Send ACK
-    if (type == MSG_CONFIG || type == MSG_DATA) {
+    // Only ACK DATA if we actually know the device name (otherwise it won't be processed correctly)
+    if (type == MSG_CONFIG || (type == MSG_DATA && deviceNames.count(macStr))) {
         AckMessage ack;
         ack.type = MSG_ACK;
         String devName = "";
@@ -230,7 +271,7 @@ void onDataRecv(uint8_t * mac, uint8_t *incomingData, uint8_t len) {
             // Store MAC for this device name
             std::vector<uint8_t> macVec(mac, mac + 6);
             deviceMacs[devName] = macVec;
-        } else if (deviceNames.count(macStr)) {
+        } else {
             devName = deviceNames[macStr];
         }
 
@@ -248,7 +289,9 @@ void onDataRecv(uint8_t * mac, uint8_t *incomingData, uint8_t len) {
             delay(10); // Small delay between messages
             esp_now_send(mac, (uint8_t *)&cmd, sizeof(CmdMessage));
             
-            // Serial log removed from ISR to avoid blocking
+            // One-shot logic: Clear the flag after sending so the device can return to sleep/normal mode
+            stayAwakeState[devName] = false;
+            Serial.printf("Sent OTA command to %s and cleared flag\n", devName.c_str());
         }
     }
 
@@ -273,16 +316,21 @@ void processBuffer() {
             ConfigMessage config;
             memcpy(&config, item.data, sizeof(ConfigMessage));
             
-            Serial.printf("Registered device: %s -> %s\n", macStr, config.deviceName);
+            Serial.printf("Registered device: %s -> %s (Type: %d)\n", macStr, config.deviceName, config.deviceType);
             
             doc["type"] = "CONFIG";
             doc["deviceName"] = config.deviceName;
-            doc["hasBME"] = config.hasBME;
-            doc["hasBH1750"] = config.hasBH1750;
-            doc["hasBattery"] = config.hasBattery;
-            doc["hasBinary"] = config.hasBinary;
-            doc["hasAnalog"] = config.hasAnalog;
-            doc["sleepInterval"] = config.sleepInterval;
+            doc["deviceType"] = config.deviceType;
+            doc["isBatteryPowered"] = config.isBatteryPowered;
+            
+            if (config.deviceType == DEV_PLANT) {
+                doc["sleepInterval"] = config.config.plant.sleepInterval;
+            } else if (config.deviceType == DEV_ENVIRO_MOTION) {
+                doc["sleepInterval"] = config.config.enviro.sleepInterval;
+                doc["motionTimeout"] = config.config.enviro.motionTimeout;
+            } else if (config.deviceType == DEV_BINARY) {
+                doc["sleepInterval"] = config.config.binary.sleepInterval;
+            }
         } 
         else if (type == MSG_DATA && item.len >= sizeof(DataMessage)) {
             DataMessage data;
@@ -294,15 +342,27 @@ void processBuffer() {
             } else {
                 doc["deviceName"] = "unknown";
             }
-            
-            doc["temperature"] = data.temperature;
-            doc["humidity"] = data.humidity;
-            doc["pressure"] = data.pressure;
-            doc["lux"] = data.lux;
+            doc["deviceType"] = data.deviceType;
             doc["batteryVoltage"] = data.batteryVoltage;
-            doc["binaryState"] = data.binaryState;
-            doc["analogValue"] = data.analogValue;
-        } else if (type != MSG_ACK) {
+
+            if (data.deviceType == DEV_PLANT) {
+                doc["temperature"] = data.data.plant.temperature;
+                doc["humidity"] = data.data.plant.humidity;
+                doc["pressure"] = data.data.plant.pressure;
+                doc["lux"] = data.data.plant.lux;
+                doc["soilMoisture"] = data.data.plant.soilMoisture;
+            } else if (data.deviceType == DEV_ENVIRO_MOTION) {
+                doc["temperature"] = data.data.enviro.temperature;
+                doc["humidity"] = data.data.enviro.humidity;
+                doc["pressure"] = data.data.enviro.pressure;
+                doc["lux"] = data.data.enviro.lux;
+                doc["motionDetected"] = data.data.enviro.motionDetected;
+                doc["distance"] = data.data.enviro.distance;
+            } else if (data.deviceType == DEV_BINARY) {
+                doc["binaryState"] = data.data.binary.state;
+            }
+        }
+ else if (type != MSG_ACK) {
             Serial.printf("Processing: Unknown message type %d from %s\n", type, macStr);
             // Advance tail and continue to next item
             tail = (tail + 1) % BUFFER_SIZE;
