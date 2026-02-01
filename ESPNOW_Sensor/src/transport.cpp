@@ -5,6 +5,7 @@ uint8_t gatewayAddress[] = {0xC4, 0x5B, 0xBE, 0x61, 0x86, 0x09};
 
 esp_now_peer_info_t peerInfo;
 static bool otaRequested = false;
+static bool updateRequested = false;
 static bool ackReceived = false;
 
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
@@ -32,6 +33,13 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
                     delay(100);
                     ESP.restart();
                 }
+                break;
+            
+            case CMD_UPDATE:
+                Serial.println("CMD: Force Update requested");
+                otaRequested = false; // Reuse/misuse? No, let's add a new flag
+                // See below for added static bool
+                updateRequested = true; 
                 break;
                 
             default:
@@ -101,6 +109,14 @@ bool isOtaRequested() {
 
 void clearOtaRequest() {
     otaRequested = false;
+}
+
+bool isUpdateRequested() {
+    return updateRequested;
+}
+
+void clearUpdateRequest() {
+    updateRequested = false;
 }
 
 bool hasAckBeenReceived() {

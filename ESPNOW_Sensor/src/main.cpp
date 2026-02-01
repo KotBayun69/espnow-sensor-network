@@ -12,8 +12,8 @@
 #define TIME_TO_SLEEP  15          /* Time ESP32 will go to sleep (in seconds) */
 
 // Device configuration
-#define CURRENT_DEVICE_TYPE DEV_PLANT 
-#define IS_BATTERY_POWERED true
+#define CURRENT_DEVICE_TYPE DEV_ENVIRO_MOTION
+#define IS_BATTERY_POWERED false
 // Save state in RTC memory so it survives deep sleep
 RTC_DATA_ATTR int bootCount = 0;
 RTC_DATA_ATTR bool isRegistered = false;
@@ -420,6 +420,13 @@ void setup() {
   // Load MQTT config
   loadMqttConfig();
 
+  // === LED CONTROL ===
+  // ESP32-C3 Super Mini usually has Blue LED on GPIO 8 (Active LOW).
+  // Red LED is usually hardware Power LED and cannot be controlled via software.
+  // We will ensure Blue LED is OFF.
+  pinMode(8, OUTPUT);
+  digitalWrite(8, HIGH); // HIGH = OFF for Active Low
+  
   // Initialize hardware and transport
   initSensors(CURRENT_DEVICE_TYPE, IS_BATTERY_POWERED);
   initTransport();
@@ -547,14 +554,66 @@ void loop() {
     }
     delay(10);
   } else if (!IS_BATTERY_POWERED) {
-      // Logic for continuous sensors (e.g., Motion)
-      static unsigned long lastReading = 0;
-      if (millis() - lastReading > 2000) { 
-          lastReading = millis();
+      // Logic for continuous sensors (e.g., Motion + Enviro)
+      static unsigned long lastSent = 0;
+      static unsigned long lastEnviroRead = 0;
+      static bool firstRun = true;
+      
+      // Last known values
+      static bool lastMotionState = false;
+      static float lastLux = 0.0;
+      static float lastTemp = 0.0;
+      static float lastHum = 0.0;
+      static float lastPressure = 0.0;
+      
+      // Intervals
+      const unsigned long ENVIRO_INTERVAL = 60000; // 60s for Light/Temp
+      
+      bool forceUpdate = isUpdateRequested();
+      if (forceUpdate) {
+          clearUpdateRequest();
+          Serial.println("Force Update Triggered!");
+      }
+      
+      bool readingEnviro = (millis() - lastEnviroRead > ENVIRO_INTERVAL) || firstRun || forceUpdate;
+
+      // Read Sensos (pass readingEnviro flag to avoid I2C/Blink if not needed)
+      SensorReadings readings = readSensors(CURRENT_DEVICE_TYPE, IS_BATTERY_POWERED, readingEnviro);
+      
+      bool triggerSend = false;
+      String triggerReason = "Heartbeat";
+
+      if (CURRENT_DEVICE_TYPE == DEV_ENVIRO_MOTION) {
+          bool currMotion = readings.data.enviro.motionDetected;
           
-          // Continuous check for registration
+          // Update cached values if we actually read them
+          if (readingEnviro) {
+              lastLux = readings.data.enviro.lux;
+              lastTemp = readings.data.enviro.temperature;
+              lastHum = readings.data.enviro.humidity;
+              lastPressure = readings.data.enviro.pressure;
+              lastEnviroRead = millis();
+              
+              // Always send on 60s interval (Heartbeat + Enviro Data)
+              triggerSend = true;
+              triggerReason = forceUpdate ? "Force Update" : "Timer (60s)";
+          } else {
+              // Fill struct with cached values so we don't send 0s on motion event
+              readings.data.enviro.lux = lastLux;
+              readings.data.enviro.temperature = lastTemp;
+              readings.data.enviro.humidity = lastHum;
+              readings.data.enviro.pressure = lastPressure;
+          }
+
+          // Check Motion Change
+          if (currMotion != lastMotionState) {
+              triggerSend = true;
+              triggerReason = "Motion Change";
+          }
+      }
+
+      if (triggerSend) { 
           if (ensureRegistered()) {
-              SensorReadings readings = readSensors(CURRENT_DEVICE_TYPE, IS_BATTERY_POWERED);
               
               DataMessage dataMsg;
               memset(&dataMsg, 0, sizeof(dataMsg));
@@ -564,10 +623,16 @@ void loop() {
               
               if (CURRENT_DEVICE_TYPE == DEV_ENVIRO_MOTION) {
                   dataMsg.data.enviro = readings.data.enviro;
+                  
+                  // Update last motion state
+                  lastMotionState = readings.data.enviro.motionDetected;
               }
               
               clearAckFlag();
               sendDataMessage(dataMsg);
+              
+              lastSent = millis();
+              firstRun = false;
               
               unsigned long startData = millis();
               while (millis() - startData < 500 && !hasAckBeenReceived()) {
@@ -575,9 +640,9 @@ void loop() {
               }
 
               if (hasAckBeenReceived()) {
-                  Serial.println("✓ Continuous Data acknowledged");
+                  Serial.printf("✓ Data Sent (%s)\n", triggerReason.c_str());
               } else {
-                  Serial.println("✗ Continuous Data ACK timeout. Force re-registration.");
+                  Serial.println("✗ Data ACK timeout. Force re-registration.");
                   isRegistered = false;
               }
           }

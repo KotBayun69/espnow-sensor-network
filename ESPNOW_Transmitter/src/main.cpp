@@ -43,8 +43,8 @@ WiFiClient espClient;
 PubSubClient client(espClient);
 
 // SoftwareSerial pins to connect to Gateway:
-// Gateway D5 (TX) -> Transmitter D6 (RX)
-// Gateway D6 (RX) -> Transmitter D5 (TX)
+// No changes needed for Transmitter, it relays generic JSON. 
+// Moving to Gateway. D6 (RX) -> Transmitter D5 (TX)
 SoftwareSerial swSerial(D6, D5); // RX = D6, TX = D5
 
 bool shouldSaveConfig = false;
@@ -316,8 +316,9 @@ void publishDiscoveryWithMac(const JsonVariantConst& config, const char* macAddr
         // Allow for ~3 missed intervals before marking unavailable + buffer
         expireAfter = (sleepInterval * 3) + 20;
     } else {
-        // Continuous mode: send data every 2s, so expire after 10s
-        expireAfter = 10; 
+        // Continuous mode: send data on change or every 5min heartbeat
+        // Set expire_after to 360s (heartbeat + buffer)
+        expireAfter = 360; 
     }
     
     String discoveryTopic = String("homeassistant/device/") + deviceName + "/config";

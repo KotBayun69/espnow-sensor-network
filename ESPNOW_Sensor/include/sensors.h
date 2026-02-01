@@ -14,6 +14,7 @@ struct SensorReadings {
 };
 
 void initSensors(uint8_t deviceType, bool isBatteryPowered);
-SensorReadings readSensors(uint8_t deviceType, bool isBatteryPowered);
+// Default includeEnviro to true for backward compatibility
+SensorReadings readSensors(uint8_t deviceType, bool isBatteryPowered, bool includeEnviro = true);
 
 #endif

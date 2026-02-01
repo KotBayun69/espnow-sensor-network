@@ -123,13 +123,15 @@ std::map<String, bool> stayAwakeState;
 // Command types for CMD messages
 enum CmdType {
     CMD_OTA = 1,
-    CMD_RESTART = 2
+    CMD_RESTART = 2,
+    CMD_UPDATE = 3
 };
 
 // Command name to type mapping
 std::map<String, uint8_t> cmdMap = {
     {"CMD_OTA", CMD_OTA},
-    {"CMD_RESTART", CMD_RESTART}
+    {"CMD_RESTART", CMD_RESTART},
+    {"CMD_UPDATE", CMD_UPDATE}
 };
 
 // Convert command name to command type
@@ -418,7 +420,47 @@ void processCommand(String line) {
             if (!error && doc.containsKey("device")) {
                 const char* devName = doc["device"];
                 
-                // Process commands dynamically
+                // Check for "cmd" style commands: {"device": "name", "cmd": "update"}
+                if (doc.containsKey("cmd")) {
+                    const char* cmdName = doc["cmd"];
+                   // Verified cmdMap and getCmdType logic. No changes needed.
+                    uint8_t cmdType = getCmdType(cmdName); // Maps "update" -> CMD_UPDATE, "restart" -> CMD_RESTART
+                    
+                    if (cmdType != 0) {
+                         // Check for Gateway commands
+                        if (strcmp(devName, "gateway") == 0) {
+                            if (cmdType == CMD_RESTART) {
+                                logToBoth("Gateway RESTART requested via cmd...");
+                                delay(100);
+                                ESP.restart();
+                            }
+                            // Add other gateway specific commands here if needed
+                        } 
+                        else {
+                            // Send CMD to generic device
+                            if (deviceMacs.count(devName)) {
+                                CmdMessage cmd;
+                                cmd.type = MSG_CMD;
+                                cmd.cmdType = cmdType;
+                                cmd.value = true; // Default value for simple commands like restart/update
+                                
+                                std::vector<uint8_t>& macVec = deviceMacs[devName];
+                                uint8_t mac_addr[6];
+                                std::copy(macVec.begin(), macVec.end(), mac_addr);
+                                
+                                esp_now_add_peer(mac_addr, ESP_NOW_ROLE_COMBO, 1, NULL, 0);
+                                esp_now_send(mac_addr, (uint8_t*)&cmd, sizeof(CmdMessage));
+                                
+                                Serial.printf("Sent CMD to %s: %s (Type %d)\n", devName, cmdName, cmdType);
+                            } else {
+                                Serial.printf("Device %s not registered yet, command queued\n", devName);
+                            }
+                        }
+                    }
+                    return; // Done processing "cmd" style
+                }
+
+                // Process commands dynamically (Legacy/Key-based: {"ota": "on"})
                 for (JsonPair kv : doc.as<JsonObject>()) {
                     const char* key = kv.key().c_str();
                     
@@ -458,7 +500,7 @@ void processCommand(String line) {
                     
                     if (cmdType != 0) {
                         const char* valueStr = kv.value().as<const char*>();
-                        bool cmdValue = (strcmp(valueStr, "on") == 0);
+                        bool cmdValue = (strcmp(valueStr, "on") == 0) || (strcmp(valueStr, "now") == 0);
                         
                         // Store OTA state for CMD message sending
                         if (cmdType == CMD_OTA) {

@@ -90,7 +90,8 @@ typedef struct __attribute__((packed)) struct_ack_message {
 // Command types for CMD messages
 enum CmdType {
     CMD_OTA = 1,
-    CMD_RESTART = 2
+    CMD_RESTART = 2,
+    CMD_UPDATE = 3
     // Future: CMD_CONFIG, CMD_SLEEP_DURATION, etc.
 };
 
@@ -105,6 +106,8 @@ bool sendConfigMessage(ConfigMessage msg);
 bool sendDataMessage(DataMessage msg);
 bool isOtaRequested();  // Check if OTA mode was requested via CMD
 void clearOtaRequest(); // Clear the flag
+bool isUpdateRequested(); 
+void clearUpdateRequest();
 bool hasAckBeenReceived(); // Check if MSG_ACK was received
 void clearAckFlag();       // Reset the ACK flag
 
