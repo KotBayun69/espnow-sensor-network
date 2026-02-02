@@ -4,7 +4,7 @@
 			"path": "ESPNOW_Gateway"
 		},
 		{
-			"path": "ESPNOW_Sensor"
+			"path": "ESPNOW_Device"
 		},
 		{
 			"path": "ESPNOW_Transmitter"

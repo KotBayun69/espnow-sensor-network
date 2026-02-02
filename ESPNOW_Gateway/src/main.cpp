@@ -492,10 +492,10 @@ void processCommand(String line) {
                                 ESP.restart();
                             }
                         }
-                        continue; // Gateway doesn't relay to sensors
+                        continue; // Gateway doesn't relay to devices
                     }
                     
-                    // Try to map to command type for sensors
+                    // Try to map to command type for devices
                     uint8_t cmdType = getCmdType(key);
                     
                     if (cmdType != 0) {

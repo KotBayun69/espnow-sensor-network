@@ -253,7 +253,7 @@ void enterOtaMode() {
     // === WIFI: Try 3 times ===
     for (int attempt = 1; attempt <= 3 && !wifiConnected; attempt++) {
       logToBoth("WiFi connection attempt " + String(attempt) + "/3...");
-      if (wm.autoConnect("ESP-NOW-SENSOR-OTA")) {
+      if (wm.autoConnect("ESP-NOW-DEVICE-OTA")) {
         wifiConnected = true;
         logToBoth("✓ WiFi connected! IP: " + WiFi.localIP().toString());
       } else {
@@ -269,7 +269,7 @@ void enterOtaMode() {
       }
       
       logToBoth("Starting config portal...");
-      if (wm.startConfigPortal("ESP-NOW-SENSOR-OTA")) {
+      if (wm.startConfigPortal("ESP-NOW-DEVICE-OTA")) {
         wifiConnected = true;
         logToBoth("✓ WiFi connected via portal! IP: " + WiFi.localIP().toString());
       } else {
@@ -317,7 +317,7 @@ void enterOtaMode() {
         }
         
         logToBoth("Restarting config portal for new credentials...");
-        if (wm.startConfigPortal("ESP-NOW-SENSOR-OTA")) {
+        if (wm.startConfigPortal("ESP-NOW-DEVICE-OTA")) {
           // Read new parameters
           strcpy(mqtt_server, custom_mqtt_server.getValue());
           strcpy(mqtt_port, custom_mqtt_port.getValue());
@@ -413,7 +413,7 @@ bool ensureRegistered() {
 void setup() {
   Serial.begin(115200);
   delay(100);
-  Serial.println("\n\n=== SENSOR BOOT ===");
+  Serial.println("\n\n=== DEVICE BOOT ===");
   bootCount++;
   Serial.printf("Boot #%d\n", bootCount);
 

@@ -504,7 +504,7 @@ void loop() {
                              logToBoth("Failed to publish Gateway status");
                         }
                     } else if (macAddress != nullptr && strlen(macAddress) > 0) {
-                        // Standard Sensor Message
+                        // Standard Device Message
                         // Check if this is a CONFIG message - trigger discovery
                         if (type != nullptr && strcmp(type, "CONFIG") == 0 && deviceName != nullptr) {
                             logToBoth("CONFIG message received for device: " + String(deviceName) + " (MAC: " + String(macAddress) + ")");

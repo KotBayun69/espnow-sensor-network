@@ -11,7 +11,7 @@
 #define MSG_ACK    3
 #define MSG_CMD    4
 
-// Structures must match on both sides (Sensor and Gateway)
+// Structures must match on both sides (Device and Gateway)
 // Use packed attribute to ensure byte alignment
 
 // Device Types
