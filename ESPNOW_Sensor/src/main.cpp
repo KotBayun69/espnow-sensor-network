@@ -11,9 +11,9 @@
 #define uS_TO_S_FACTOR 1000000ULL  /* Conversion factor for micro seconds to seconds */
 #define TIME_TO_SLEEP  15          /* Time ESP32 will go to sleep (in seconds) */
 
-// Device configuration
-#define CURRENT_DEVICE_TYPE DEV_ENVIRO_MOTION
-#define IS_BATTERY_POWERED false
+// Device configuration defined in platformio.ini
+// #define DEVICE_TYPE defined by build flag
+// #define IS_BATTERY_POWERED defined by build flag
 // Save state in RTC memory so it survives deep sleep
 RTC_DATA_ATTR int bootCount = 0;
 RTC_DATA_ATTR bool isRegistered = false;
@@ -372,19 +372,19 @@ bool ensureRegistered() {
     ConfigMessage configMsg;
     memset(&configMsg, 0, sizeof(configMsg));
     configMsg.type = MSG_CONFIG;
-    configMsg.deviceType = CURRENT_DEVICE_TYPE;
+    configMsg.deviceType = DEVICE_TYPE;
     configMsg.isBatteryPowered = IS_BATTERY_POWERED;
     WiFi.macAddress(configMsg.macAddr);
     strcpy(configMsg.deviceName, DEVICE_NAME);
     
-    if (CURRENT_DEVICE_TYPE == DEV_PLANT) {
+    #if DEVICE_TYPE == 1 // DEV_PLANT
         configMsg.config.plant.sleepInterval = TIME_TO_SLEEP;
-    } else if (CURRENT_DEVICE_TYPE == DEV_ENVIRO_MOTION) {
+    #elif DEVICE_TYPE == 2 // DEV_ENVIRO_MOTION
         configMsg.config.enviro.sleepInterval = TIME_TO_SLEEP;
         configMsg.config.enviro.motionTimeout = 30;
-    } else if (CURRENT_DEVICE_TYPE == DEV_BINARY) {
+    #elif DEVICE_TYPE == 3 // DEV_BINARY
         configMsg.config.binary.sleepInterval = TIME_TO_SLEEP;
-    }
+    #endif
 
     for (int i = 0; i < 3; i++) {
         clearAckFlag();
@@ -428,7 +428,7 @@ void setup() {
   digitalWrite(8, HIGH); // HIGH = OFF for Active Low
   
   // Initialize hardware and transport
-  initSensors(CURRENT_DEVICE_TYPE, IS_BATTERY_POWERED);
+  initSensors(); 
   initTransport();
 
   // Ensure registration before sending data
@@ -436,34 +436,35 @@ void setup() {
 
   // Read and send data
   Serial.println("Reading sensors...");
-  SensorReadings readings = readSensors(CURRENT_DEVICE_TYPE, IS_BATTERY_POWERED);
+  SensorReadings readings = readSensors();
   
-  if (CURRENT_DEVICE_TYPE == DEV_PLANT) {
+  #if DEVICE_TYPE == 1 // DEV_PLANT
       Serial.printf("Plant: T=%.2f°C, H=%.2f%%, Lux=%.2f, Moist=%.2f%%, Batt=%.2fV\n",
                     readings.data.plant.temperature, readings.data.plant.humidity, 
                     readings.data.plant.lux, readings.data.plant.soilMoisture, readings.batteryVoltage);
-  } else if (CURRENT_DEVICE_TYPE == DEV_ENVIRO_MOTION) {
-      Serial.printf("Enviro: T=%.2f°C, Motion=%d, Dist=%.2f, Batt=%.2fV\n",
+  #elif DEVICE_TYPE == 2 // DEV_ENVIRO_MOTION
+      Serial.printf("Enviro: T=%.2f°C, Motion=%d, Batt=%.2fV\n",
                     readings.data.enviro.temperature, readings.data.enviro.motionDetected,
-                    readings.data.enviro.distance, readings.batteryVoltage);
-  } else if (CURRENT_DEVICE_TYPE == DEV_BINARY) {
+                    readings.batteryVoltage);
+  #elif DEVICE_TYPE == 3 // DEV_BINARY
       Serial.printf("Binary: State=%d, Batt=%.2fV\n",
                     readings.data.binary.state, readings.batteryVoltage);
-  }
+  #endif
 
   DataMessage dataMsg;
   memset(&dataMsg, 0, sizeof(dataMsg));
   dataMsg.type = MSG_DATA;
-  dataMsg.deviceType = CURRENT_DEVICE_TYPE;
+  dataMsg.deviceType = DEVICE_TYPE;
   dataMsg.batteryVoltage = readings.batteryVoltage;
   
-  if (CURRENT_DEVICE_TYPE == DEV_PLANT) {
+  #if DEVICE_TYPE == 1 // DEV_PLANT
       dataMsg.data.plant = readings.data.plant;
-  } else if (CURRENT_DEVICE_TYPE == DEV_ENVIRO_MOTION) {
+  #elif DEVICE_TYPE == 2 // DEV_ENVIRO_MOTION
       dataMsg.data.enviro = readings.data.enviro;
-  } else if (CURRENT_DEVICE_TYPE == DEV_BINARY) {
+  #elif DEVICE_TYPE == 3 // DEV_BINARY
       dataMsg.data.binary = readings.data.binary;
-  }
+  #endif
+
   if (isRegistered) {
       clearAckFlag();
       sendDataMessage(dataMsg);
@@ -490,6 +491,7 @@ void setup() {
     enterOtaMode();
   }
 
+  // Sleep or Continuous checks
   if (!otaMode && IS_BATTERY_POWERED) {
     // Go to sleep
     Serial.printf("Going to sleep for %d seconds...\n", TIME_TO_SLEEP);
@@ -553,8 +555,13 @@ void loop() {
       }
     }
     delay(10);
-  } else if (!IS_BATTERY_POWERED) {
+  }
+  
+  #if !IS_BATTERY_POWERED
+  else {
       // Logic for continuous sensors (e.g., Motion + Enviro)
+      // Only applicable if not battery powered
+      
       static unsigned long lastSent = 0;
       static unsigned long lastEnviroRead = 0;
       static bool firstRun = true;
@@ -578,12 +585,12 @@ void loop() {
       bool readingEnviro = (millis() - lastEnviroRead > ENVIRO_INTERVAL) || firstRun || forceUpdate;
 
       // Read Sensos (pass readingEnviro flag to avoid I2C/Blink if not needed)
-      SensorReadings readings = readSensors(CURRENT_DEVICE_TYPE, IS_BATTERY_POWERED, readingEnviro);
+      SensorReadings readings = readSensors(readingEnviro);
       
       bool triggerSend = false;
       String triggerReason = "Heartbeat";
 
-      if (CURRENT_DEVICE_TYPE == DEV_ENVIRO_MOTION) {
+      #if DEVICE_TYPE == 2 // DEV_ENVIRO_MOTION
           bool currMotion = readings.data.enviro.motionDetected;
           
           // Update cached values if we actually read them
@@ -610,7 +617,7 @@ void loop() {
               triggerSend = true;
               triggerReason = "Motion Change";
           }
-      }
+      #endif
 
       if (triggerSend) { 
           if (ensureRegistered()) {
@@ -618,15 +625,15 @@ void loop() {
               DataMessage dataMsg;
               memset(&dataMsg, 0, sizeof(dataMsg));
               dataMsg.type = MSG_DATA;
-              dataMsg.deviceType = CURRENT_DEVICE_TYPE;
-              dataMsg.batteryVoltage = IS_BATTERY_POWERED ? readings.batteryVoltage : 0.0;
+              dataMsg.deviceType = DEVICE_TYPE;
+              dataMsg.batteryVoltage = 0.0;
               
-              if (CURRENT_DEVICE_TYPE == DEV_ENVIRO_MOTION) {
+              #if DEVICE_TYPE == 2 // DEV_ENVIRO_MOTION
                   dataMsg.data.enviro = readings.data.enviro;
                   
                   // Update last motion state
                   lastMotionState = readings.data.enviro.motionDetected;
-              }
+              #endif
               
               clearAckFlag();
               sendDataMessage(dataMsg);
@@ -648,10 +655,11 @@ void loop() {
           }
       }
           
-          // Check if OTA was requested in the response
-          if (isOtaRequested()) {
-              enterOtaMode();
-          }
+      // Check if OTA was requested in the response
+      if (isOtaRequested()) {
+          enterOtaMode();
+      }
       delay(10);
   }
+  #endif
 }

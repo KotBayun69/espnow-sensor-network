@@ -49,8 +49,7 @@ typedef struct __attribute__((packed)) {
     float humidity;
     float pressure;
     float lux;
-    bool motionDetected;
-    float distance; // Distance to target
+    bool motionDetected; // effectively "Occupancy"
 } EnviroMotionData;
 
 typedef struct __attribute__((packed)) {

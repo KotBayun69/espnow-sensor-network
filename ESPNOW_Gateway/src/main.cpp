@@ -187,8 +187,9 @@ typedef struct __attribute__((packed)) {
     float pressure;
     float lux;
     bool motionDetected;
-    float distance;
 } EnviroMotionData;
+
+
 
 typedef struct __attribute__((packed)) {
     bool state;
@@ -359,7 +360,6 @@ void processBuffer() {
                 doc["pressure"] = data.data.enviro.pressure;
                 doc["lux"] = data.data.enviro.lux;
                 doc["motionDetected"] = data.data.enviro.motionDetected;
-                doc["distance"] = data.data.enviro.distance;
             } else if (data.deviceType == DEV_BINARY) {
                 doc["binaryState"] = data.data.binary.state;
             }

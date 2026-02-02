@@ -411,15 +411,7 @@ void publishDiscoveryWithMac(const JsonVariantConst& config, const char* macAddr
         motion["val_tpl"] = "{{ 'ON' if value_json.motionDetected else 'OFF' }}";
         motion["exp_aft"] = expireAfter;
 
-        // Distance sensor
-        JsonObject dist = components.createNestedObject("distance");
-        dist["p"] = "sensor";
-        dist["uniq_id"] = String(deviceName) + "_distance";
-        dist["name"] = "Distance";
-        dist["stat_cla"] = "measurement";
-        dist["unit_of_meas"] = "cm";
-        dist["val_tpl"] = "{{ value_json.distance | round(1) }}";
-        dist["exp_aft"] = expireAfter;
+        // Distance sensor REMOVED (Occupancy only mode)
     }
     
     if (deviceType == DEV_BINARY) {
