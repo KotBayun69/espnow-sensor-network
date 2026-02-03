@@ -16,15 +16,10 @@ BH1750 lightMeter;
 #endif
 
 // Pin Definitions
-#if defined(USE_LD2410)
-    #define LD2410_BAUD 256000
-    const int LD2410_RX_PIN = 20; // Connect to Sensor TX
-    const int LD2410_TX_PIN = 21; // Connect to Sensor RX
-    const int LD2410_OUT_PIN = 10;
-#endif
+// USE_LD2410 removed
 
-#if defined(USE_SOIL_SENSOR)
-    const int SOIL_PIN = 2; // Verify pin
+#if defined(USE_ADC_SENSOR)
+    const int ADC_PIN = 2; // Verify pin
 #endif
 
 #if defined(USE_BINARY_SENSOR)
@@ -55,19 +50,14 @@ void initSensors() {
         }
     #endif
 
-    #if defined(USE_SOIL_SENSOR)
-        pinMode(SOIL_PIN, INPUT);
+    #if defined(USE_ADC_SENSOR)
+        pinMode(ADC_PIN, INPUT);
     #endif
 
     #if defined(USE_BINARY_SENSOR)
         pinMode(DOOR_PIN, INPUT_PULLUP);
     #endif
 
-    #if defined(USE_LD2410)
-        pinMode(LD2410_OUT_PIN, INPUT);
-        // Initialize UART for LD2410
-        Serial1.begin(LD2410_BAUD, SERIAL_8N1, LD2410_RX_PIN, LD2410_TX_PIN);
-    #endif
 
     #if IS_BATTERY_POWERED
         pinMode(BATTERY_PIN, INPUT);
@@ -77,7 +67,20 @@ void initSensors() {
 SensorReadings readSensors(bool includeEnviro) {
     SensorReadings readings;
     memset(&readings, 0, sizeof(readings)); // Zero out
-    readings.deviceType = DEVICE_TYPE;
+    readings.flags = 0;
+    
+    #ifdef USE_BME280
+        readings.flags |= SENSOR_FLAG_BME;
+    #endif
+    #ifdef USE_BH1750
+        readings.flags |= SENSOR_FLAG_LUX;
+    #endif
+    #ifdef USE_ADC_SENSOR
+        readings.flags |= SENSOR_FLAG_ADC;
+    #endif
+    #ifdef USE_BINARY_SENSOR
+        readings.flags |= SENSOR_FLAG_BINARY;
+    #endif
     
     #if IS_BATTERY_POWERED
         int battRaw = analogRead(BATTERY_PIN);
@@ -87,40 +90,29 @@ SensorReadings readSensors(bool includeEnviro) {
         readings.batteryVoltage = 0.0;
     #endif
 
-    #if defined(USE_BME280) && defined(USE_BH1750)
+    #if defined(USE_BME280)
         if (includeEnviro) {
-            readings.data.enviro.temperature = bme.readTemperature(); // plant and enviro share structs somewhat or fields
-            // NOTE: PlantData and EnviroMotionData have same first 4 fields (temp, hum, pres, lux)
-            // We need to match the struct type based on DEVICE_TYPE
-            
-            #if DEVICE_TYPE == 1 // DEV_PLANT
-                readings.data.plant.temperature = bme.readTemperature();
-                readings.data.plant.humidity = bme.readHumidity();
-                readings.data.plant.pressure = bme.readPressure() / 100.0F;
-                readings.data.plant.lux = lightMeter.readLightLevel();
-            #elif DEVICE_TYPE == 2 // DEV_ENVIRO_MOTION
-                readings.data.enviro.temperature = bme.readTemperature();
-                readings.data.enviro.humidity = bme.readHumidity();
-                readings.data.enviro.pressure = bme.readPressure() / 100.0F;
-                readings.data.enviro.lux = lightMeter.readLightLevel();
-            #endif
+            readings.bme.temperature = bme.readTemperature();
+            readings.bme.humidity = bme.readHumidity();
+            readings.bme.pressure = bme.readPressure() / 100.0F;
         }
     #endif
 
-    #if defined(USE_SOIL_SENSOR)
+    #if defined(USE_BH1750)
         if (includeEnviro) {
-             readings.data.plant.soilMoisture = analogRead(SOIL_PIN) / 4095.0 * 100.0;
+             readings.lux.lux = lightMeter.readLightLevel();
+        }
+    #endif
+
+    #if defined(USE_ADC_SENSOR)
+        if (includeEnviro) {
+             readings.adc.adcValue = analogRead(ADC_PIN) / 4095.0 * 100.0;
         }
     #endif
         
-    #if defined(USE_LD2410)
-        // Just read the binary output pin from the LD2410
-        // The sensor internal logic handles "Occupied" vs "Empty"
-        readings.data.enviro.motionDetected = digitalRead(LD2410_OUT_PIN);
-    #endif
 
     #if defined(USE_BINARY_SENSOR)
-        readings.data.binary.state = digitalRead(DOOR_PIN);
+        readings.binary.state = digitalRead(DOOR_PIN);
     #endif
 
     return readings;

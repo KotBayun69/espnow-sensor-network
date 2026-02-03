@@ -4,34 +4,22 @@
 #include "transport.h"
 
 struct SensorReadings {
-    uint8_t deviceType;
+    uint8_t flags;
     float batteryVoltage;
-    union {
-        PlantData plant;
-        EnviroMotionData enviro;
-        BinaryData binary;
-    } data;
+    BMEData bme;
+    LuxData lux;
+    ADCData adc;
+    BinaryData binary;
+    // Helper unions for mapping to Protocol DataMessage if needed, 
+    // OR we just map field-by-field in main.cpp. 
+    // User requested "PlantData -> ADCData" which is confusing, but keeping it simple:
+    // This struct now holds ALL potential data.
 };
 
-// Feature flags based on DEVICE_TYPE
-// (DEVICE_TYPE is defined in platformio.ini for each env)
-
-#ifndef DEVICE_TYPE
-#error "DEVICE_TYPE must be defined in build flags"
-#endif
+// DEVICE_TYPE check removed - feature flags drive logic.
 
 // Define features based on device type
-#if DEVICE_TYPE == 1 // DEV_PLANT
-    #define USE_BME280
-    #define USE_BH1750
-    #define USE_SOIL_SENSOR
-#elif DEVICE_TYPE == 2 // DEV_ENVIRO_MOTION
-    #define USE_BME280
-    #define USE_BH1750
-    #define USE_LD2410
-#elif DEVICE_TYPE == 3 // DEV_BINARY
-    #define USE_BINARY_SENSOR
-#endif
+// Features are now defined in platformio.ini
 
 void initSensors(); // No params needing configuration now, but let's keep it simple
 
