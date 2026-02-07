@@ -48,10 +48,12 @@ void saveMqttConfig() {
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  String payloadStr = "";
+  for (unsigned int i=0; i<length; i++) payloadStr += (char)payload[i];
+  log("MQTT Recv [" + String(topic) + "]: " + payloadStr);
+
   // Handle Calibration Topic (Raw String Payload)
   if (String(topic).endsWith("/calibrate")) {
-      String payloadStr = "";
-      for (unsigned int i=0; i<length; i++) payloadStr += (char)payload[i];
       
       StaticJsonDocument<128> statusDoc;
       char buffer[128];
@@ -93,32 +95,21 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       return;
   }
 
-  // Since we subscribe specifically, we assume it's for us.
-  bool isTarget = true; 
-    
-  if (isTarget) {
-    if (doc.containsKey("ota")) {
-      String otaCmd = doc["ota"].as<String>();
-      if (otaCmd == "off") {
-        log("MQTT: OTA OFF - Restarting...");
-        StaticJsonDocument<128> statusDoc;
-        statusDoc["status"] = "calibration finished. restarting in 10 seconds";
-        char buffer[128];
-        serializeJson(statusDoc, buffer);
-        mqttClient.publish(("espnow/" + slugify(DEVICE_NAME) + "/status").c_str(), buffer);
-        
-        delay(10000); 
-        mqttClient.disconnect();
-        ESP.restart();
+  if (doc.containsKey("cmd")) {
+      String cmd = doc["cmd"].as<String>();
+      if (cmd == "restart") {
+          log("MQTT: Restart requested");
+          
+          StaticJsonDocument<128> statusDoc;
+          char buffer[128];
+          statusDoc["status"] = "restarting";
+          serializeJson(statusDoc, buffer);
+          mqttClient.publish(("espnow/" + slugify(DEVICE_NAME) + "/status").c_str(), buffer);
+          
+          delay(100); 
+          mqttClient.disconnect();
+          ESP.restart();
       }
-    }
-    if (doc.containsKey("restart")) {
-      String restartCmd = doc["restart"].as<String>();
-      if (restartCmd == "on") {
-        log("MQTT: Restart requested");
-        delay(100); ESP.restart();
-      }
-    }
   }
 }
 

@@ -15,6 +15,7 @@ A low-power, long-range sensor network using ESP-NOW to communicate between batt
     -   Receives ESP-NOW messages from sensors.
     -   Buffers and forwards messages via **SoftwareSerial** to the Transmitter.
     -   Queues "Wake Up" commands (OTA/Calibration) for sleeping sensors.
+    -   *Note: Does not connect to MQTT/WiFi during normal operation.*
 
 3.  **Transmitter (Wemos D1 Mini / ESP8266)**:
     -   Connects to WiFi and MQTT Broker.
@@ -79,21 +80,47 @@ Replace `<device_slug>` with the lowercase device name (e.g., `esp32_sensor`).
 **1. Wake Up / Enter OTA Mode**
 Prevents the sensor from sleeping on next wake-up.
 ```json
-{"cmd": "calibrate"} 
+{"cmd": "ota"} 
 // OR 
-{"ota": "on"}
+{"cmd": "calibrate"}
 ```
 
-**2. Exit OTA Mode**
-Returns sensor to normal sleep cycle.
-```json
-{"ota": "off"}
-```
+### Commands (`.../control`)
 
-**3. Restart Device**
+**1. General Commands (All Devices)**
 ```json
 {"cmd": "restart"}
 ```
+
+**2. Sensor Specific**
+```json
+{"cmd": "ota"}       // Wake up for OTA/Calibration
+{"cmd": "calibrate"} // Alias for "ota"
+```
+
+**3. Transmitter Specific (`espnow/transmitter/control`)**
+```json
+{"cmd": "ota"}       // Main ESP8266 OTA
+{"cmd": "restart"}
+```
+
+**4. Gateway Specific (`espnow/gateway/control`)**
+```json
+{"cmd": "restart"}
+```
+
+### Home Assistant Integration
+The system automatically discovers devices in Home Assistant via MQTT Discovery:
+-   **Sensors**: Battery, Temperature, Humidity, Pressure, Lux, Soil Moisture.
+-   **Buttons**:
+    -   `Restart`: Reboot the device.
+    -   `Wake Up / OTA`: Put device in OTA mode (or wake for calibration).
+    -   `Calibrate`: Start soil sensor calibration (if applicable).
+-   **Status Monitoring**:
+    -   **Transmitter**: Reports `online`/`offline` via MQTT LWT.
+    -   **Gateway**: Reports status via heartbeat to Transmitter.
+    -   **Sensors**: Mark as `unavailable` if no data received for `3 * SleepInterval`.
+
 
 ---
 
@@ -114,7 +141,7 @@ Returns sensor to normal sleep cycle.
     *Wait for "status": "done".*
 
 4.  **Finish**:
-    Publish `{"ota": "off"}` to `espnow/<device_slug>/control`.
+    Publish `{"cmd": "restart"}` to `espnow/<device_slug>/control`.
     *Device will report "restarting in 10 seconds" and reboot.*
 
 ---

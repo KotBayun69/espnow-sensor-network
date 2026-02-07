@@ -8,7 +8,7 @@
 #include <LittleFS.h>
 #include <map>
 #include <vector>
-#include <PubSubClient.h>
+#include <vector>
 
 #include "CommonUtils.h"
 #include "protocol.h"
@@ -25,24 +25,10 @@ void log(const String& msg, bool newline = true) {
     logToBoth(msg, newline, telnetClient);
 }
 
-MqttConfig mqtt_cfg;
-WiFiClient espClient;
-PubSubClient client(espClient);
-
 // Device tracking maps
 std::map<String, String> deviceNames;
 std::map<String, std::vector<uint8_t>> deviceMacs;
 std::map<String, bool> stayAwakeState;
-
-void loadConfig() {
-    if (!loadBaseConfig(mqtt_cfg, "/config.json")) {
-        Serial.println("Using default MQTT settings");
-    }
-}
-
-void saveConfig() {
-    saveBaseConfig(mqtt_cfg, "/config.json");
-}
 
 void loadKnownDevices() {
     if (LittleFS.exists("/known_devices.json")) {
@@ -76,39 +62,6 @@ void saveKnownDevices() {
 }
 
 void processCommand(String line); // Forward declaration
-
-void reconnectMqtt() {
-    if (!client.connected()) {
-        log("Attempting MQTT connection to " + String(mqtt_cfg.server) + "...");
-        client.setServer(mqtt_cfg.server, mqtt_cfg.port);
-        String clientId = "ESPNOW-Gateway-" + String(ESP.getChipId(), HEX);
-        if (client.connect(clientId.c_str(), mqtt_cfg.user, mqtt_cfg.pass)) {
-            log("✓ MQTT connected");
-            client.subscribe("espnow/gateway/control");
-        } else {
-            log("✗ MQTT failed, rc=" + String(client.state()));
-            delay(5000);
-        }
-    }
-}
-
-void callback(char* topic, byte* payload, unsigned int length) {
-    String msg = "";
-    for (unsigned int i = 0; i < length; i++) {
-        msg += (char)payload[i];
-    }
-    
-    if (String(topic) == "espnow/gateway/control") {
-        StaticJsonDocument<256> doc;
-        DeserializationError error = deserializeJson(doc, msg);
-        if (!error) {
-            doc["device"] = "gateway"; 
-            String normalized;
-            serializeJson(doc, normalized);
-            processCommand(normalized);
-        }
-    }
-}
 
 SoftwareSerial swSerial(D6, D5); // RX = D6, TX = D5
 
@@ -157,7 +110,25 @@ void onDataRecv(uint8_t * mac, uint8_t *incomingData, uint8_t len) {
             esp_now_add_peer(mac, ESP_NOW_ROLE_COMBO, 1, NULL, 0);
             esp_now_send(mac, (uint8_t *)&cmd, sizeof(CmdMessage));
             stayAwakeState[devName] = false; 
-            Serial.printf("Async OTA command sent to %s\n", devName.c_str());
+        }
+    }
+    
+    if (type == MSG_DATA && len >= sizeof(DataMessage)) {
+        // Also check if we need to wake up device on DATA message (in case CONFIG was lost)
+        String devName = "";
+        if (deviceNames.count(macStr)) {
+            devName = deviceNames[macStr];
+        }
+
+        if (devName.length() > 0 && stayAwakeState.count(devName) && stayAwakeState[devName]) {
+            CmdMessage cmd;
+            cmd.type = MSG_CMD;
+            cmd.cmdType = CMD_OTA;
+            cmd.value = true;
+            esp_now_add_peer(mac, ESP_NOW_ROLE_COMBO, 1, NULL, 0);
+            esp_now_send(mac, (uint8_t *)&cmd, sizeof(CmdMessage));
+            stayAwakeState[devName] = false; 
+            Serial.printf("Async OTA command sent to %s (via DATA)\n", devName.c_str());
         }
     }
     enqueueMessage(mac, incomingData, len);
@@ -260,6 +231,10 @@ void processCommand(String line) {
                             if (cmdType == CMD_RESTART) {
                                 log("Gateway RESTART requested...");
                                 delay(100); ESP.restart();
+                            } else if (cmdType == CMD_OTA) {
+                                log("Gateway entering OTA mode via CMD...");
+                                otaMode = true;
+                                otaStatusSent = false;
                             } else if (cmdType == CMD_FLUSH) {
                                 log("Gateway: Flushing known devices list...");
                                 deviceNames.clear();
@@ -286,36 +261,6 @@ void processCommand(String line) {
                     }
                     return; 
                 }
-
-                if (doc.containsKey("ota")) {
-                    const char* val = doc["ota"];
-                    bool otaOn = (strcmp(val, "on") == 0);
-                    if (actualPrettyName == "gateway") {
-                        if (otaOn) { 
-                            otaMode = true; 
-                            otaStatusSent = false; 
-                        } else { 
-                            if (client.connected()) {
-                                StaticJsonDocument<128> sDoc;
-                                sDoc["status"] = "restarting"; // or "offline"
-                                String json; serializeJson(sDoc, json);
-                                client.publish("espnow/gateway/state", json.c_str());
-                                delay(200); // Give time to flush
-                            }
-                            // Also send to transmitter just in case
-                            StaticJsonDocument<128> tDoc;
-                            tDoc["device"] = "gateway";
-                            tDoc["status"] = "restarting";
-                            String tJson; serializeJson(tDoc, tJson);
-                            swSerial.println(tJson);
-
-                            delay(100); 
-                            ESP.restart(); 
-                        }
-                    } else if (actualPrettyName != "") {
-                        stayAwakeState[actualPrettyName] = otaOn;
-                    }
-                }
             }
         }
 }
@@ -326,7 +271,6 @@ void setup() {
     if (!LittleFS.begin()) {
         Serial.println("LittleFS mount failed");
     }
-    loadConfig();
     loadKnownDevices();
     WiFi.mode(WIFI_STA);
     wifi_set_channel(1);
@@ -348,7 +292,6 @@ void loop() {
     processBuffer();
     if (otaMode) {
         ArduinoOTA.handle();
-        client.loop();
     }
 
     if (swSerial.available() || Serial.available()) {
@@ -362,20 +305,8 @@ void loop() {
         if (!wifiInit) {
             WiFiManager wm;
             wm.setDebugOutput(false);
-            WiFiManagerParameter c_server("server", "mqtt server", mqtt_cfg.server, 40);
-            char pStr[6]; itoa(mqtt_cfg.port, pStr, 10);
-            WiFiManagerParameter c_port("port", "mqtt port", pStr, 6);
-            WiFiManagerParameter c_user("user", "mqtt user", mqtt_cfg.user, 32);
-            WiFiManagerParameter c_pass("pass", "mqtt pass", mqtt_cfg.pass, 32);
-            wm.addParameter(&c_server); wm.addParameter(&c_port);
-            wm.addParameter(&c_user); wm.addParameter(&c_pass);
-
             if (wm.autoConnect("ESP-NOW-GATEWAY-OTA")) {
-                strlcpy(mqtt_cfg.server, c_server.getValue(), 40);
-                mqtt_cfg.port = atoi(c_port.getValue());
-                strlcpy(mqtt_cfg.user, c_user.getValue(), 32);
-                strlcpy(mqtt_cfg.pass, c_pass.getValue(), 32);
-                saveConfig();
+                // Connected
             }
             wifiInit = true;
         }
@@ -383,8 +314,6 @@ void loop() {
         if (WiFi.status() == WL_CONNECTED) {
             static bool servicesStarted = false;
             if (!servicesStarted) {
-                client.setServer(mqtt_cfg.server, mqtt_cfg.port);
-                client.setCallback(callback);
                 ArduinoOTA.setHostname("espnow-gateway");
                 ArduinoOTA.onStart([]() { isOTAUpdating = true; log("OTA Starting..."); });
                 ArduinoOTA.onEnd([]() { isOTAUpdating = false; log("OTA Complete!"); });
@@ -402,7 +331,6 @@ void loop() {
                     log("Connected Telnet");
                 } else nC.stop();
             }
-            if (!client.connected()) reconnectMqtt();
 
              if (!otaStatusSent) {
                   StaticJsonDocument<128> sDoc;
@@ -410,10 +338,22 @@ void loop() {
                   sDoc["status"] = "ota";
                   sDoc["connection"] = WiFi.localIP().toString();
                   String json; serializeJson(sDoc, json);
-                 log(json); swSerial.println(json);
-                 if (client.connected()) client.publish("espnow/gateway/state", json.c_str());
-                 otaStatusSent = true;
+                  log(json); swSerial.println(json);
+                  otaStatusSent = true;
             }
         }
+    }
+
+    // --- Heartbeat with Device Watchdog ---
+    // Gateway sends a heartbeat every 30s so Transmitter knows it's alive.
+    static unsigned long lastHeartbeat = 0;
+    if (millis() - lastHeartbeat > 30000) {
+        lastHeartbeat = millis();
+        StaticJsonDocument<64> doc;
+        doc["type"] = "HEARTBEAT";
+        doc["device"] = "gateway";
+        String json; serializeJson(doc, json);
+        swSerial.println(json);
+        // log("Sent Heartbeat"); // Quiet to avoid spam
     }
 }

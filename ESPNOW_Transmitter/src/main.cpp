@@ -83,9 +83,8 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
                    log("RESTART requested");
                    delay(100); ESP.restart();
                }
-               bool otaOn = (doc["ota"] == "on");
-               if (otaOn) {
-                   log("OTA ON");
+               if (doc["cmd"] == "ota") {
+                   log("OTA Starting...");
                    ArduinoOTA.begin();
                    StaticJsonDocument<128> sDoc;
                    sDoc["connection"] = WiFi.localIP().toString();
@@ -106,8 +105,13 @@ void reconnect() {
 
     log("Attempting MQTT connection to " + String(mqtt_cfg.server));
     client.setServer(mqtt_cfg.server, mqtt_cfg.port);
-    String clientId = "ESP8266-Transmitter-" + String(random(0xffff), HEX);
-    if (client.connect(clientId.c_str(), mqtt_cfg.user, mqtt_cfg.pass)) {
+    // Use fixed Client ID based on MAC to ensure session takeover
+    String clientId = "ESPNOW-Transmitter-" + WiFi.macAddress();
+    clientId.replace(":", "");
+    
+    // LWT: Topic, QoS, Retain, Payload
+    if (client.connect(clientId.c_str(), mqtt_cfg.user, mqtt_cfg.pass, 
+                       "espnow/transmitter/state", 1, true, "{\"status\":\"offline\"}")) {
         log("✓ connected");
         client.subscribe("espnow/+/control");
         StaticJsonDocument<128> doc;
@@ -115,7 +119,11 @@ void reconnect() {
         doc["status"] = "online"; 
         char buffer[128];
         serializeJson(doc, buffer);
-        client.publish("espnow/transmitter/state", buffer);
+        if (client.publish("espnow/transmitter/state", buffer, true)) {
+            log("State published: ONLINE");
+        } else {
+            log("State publish failed (ONLINE)");
+        }
         lastReconnectAttempt = 0; // Reset timer on success
     } else {
         static int mqttFailures = 0;
@@ -226,6 +234,43 @@ void publishDiscoveryWithMac(const JsonVariantConst& config, const char* macAddr
         }
     }
     
+    // Helper for Buttons
+    auto publishButton = [&](const char* slug, const char* name, const char* cmdPayload, const char* icon = "mdi:gesture-tap-button") {
+        DynamicJsonDocument doc(1024);
+        String discoveryTopic = String("homeassistant/button/") + slugify(deviceName) + "/" + slug + "/config";
+        
+        doc["name"] = name;
+        doc["cmd_t"] = String(mqtt_topic_base) + "/" + slugify(deviceName) + "/control";
+        doc["pl_prs"] = cmdPayload;
+        doc["uniq_id"] = uniqueIdBase + "_btn_" + slug;
+        doc["ic"] = icon;
+        doc["ret"] = false;
+
+        JsonObject device = doc.createNestedObject("dev");
+        JsonArray identifiers = device.createNestedArray("ids");
+        if (macAddress && strlen(macAddress) > 0) identifiers.add(macAddress);
+        identifiers.add(deviceName);
+        device["name"] = deviceName;
+        device["mdl"] = "ESP-NOW Sensor";
+        device["mf"] = "Antigravity";
+
+        char buffer[1024];
+        serializeJson(doc, buffer);
+        if (client.publish(discoveryTopic.c_str(), buffer, true)) {
+            log("✓ Published button: " + String(name));
+        } else {
+            log("✗ Failed to publish button: " + String(name));
+        }
+    };
+
+    // Standard Buttons
+    publishButton("restart", "Restart Device", "{\"cmd\": \"restart\"}", "mdi:restart");
+    publishButton("ota", "Wake Up / OTA", "{\"cmd\": \"ota\"}", "mdi:cloud-upload");
+
+    if (sensorFlags & SENSOR_FLAG_SOIL) {
+        publishButton("calibrate", "Calibrate Soil Sensor", "{\"cmd\": \"calibrate\"}", "mdi:water-percent");
+    }
+    
     discoveredDevices[slugName] = true;
 }
 
@@ -259,6 +304,10 @@ void setup() {
 }
 
 void loop() {
+
+    static unsigned long lastGatewayHeartbeat = 0;
+    static bool gatewayOnline = false;
+    
     ArduinoOTA.handle();
     if (isOTAUpdating) return;
     if (!client.connected()) reconnect();
@@ -287,6 +336,17 @@ void loop() {
                     
                     if (doc["type"] == "CONFIG" && deviceName) {
                         publishDiscoveryWithMac(doc, doc["mac"] | "");
+                    } else if (doc["type"] == "HEARTBEAT") {
+                        // Update watchdog
+                        lastGatewayHeartbeat = millis();
+                        if (!gatewayOnline) {
+                            log("Gateway is ONLINE (Heartbeat)");
+                            gatewayOnline = true;
+                            // Publish online status
+                            if (client.connected()) {
+                                client.publish("espnow/gateway/state", "{\"status\":\"online\"}", true);
+                            }
+                        }
                     } else if (deviceName) {
                         // ... existing state/control handling ...
                         String topic = String(mqtt_topic_base) + "/" + slugify(deviceName) + "/state";
@@ -298,7 +358,11 @@ void loop() {
                     } else if (doc["device"] == "gateway") {
                          doc.remove("device"); // Strip routing field
                          String payload; serializeJson(doc, payload);
-                         client.publish("espnow/gateway/state", payload.c_str());
+                         client.publish("espnow/gateway/state", payload.c_str(), true); // Retain gateway status
+                         
+                         // Treat any gateway message as a heartbeat
+                         lastGatewayHeartbeat = millis();
+                         if (!gatewayOnline) gatewayOnline = true; 
                     }
                 } else {
                     log("Transmitter: JSON Error: " + String(error.c_str()) + " in buffer: " + inputBuffer);
@@ -306,5 +370,21 @@ void loop() {
                 inputBuffer = "";
             }
         } else if (c != '\r') inputBuffer += c;
+    }
+
+    // --- Gateway Watchdog ---
+    // Monitor heartbeat from Gateway
+    // Variables moved to top of loop()
+
+    // Check if we received a heartbeat recently (timeout: 70s > 2 missed heartbeats)
+    if (millis() - lastGatewayHeartbeat > 70000) {
+        if (gatewayOnline) {
+            log("Gateway is OFFLINE (Watchdog)");
+            gatewayOnline = false;
+            // Publish offline status
+             if (client.connected()) {
+                client.publish("espnow/gateway/state", "{\"status\":\"offline\"}", true);
+             }
+        }
     }
 }
