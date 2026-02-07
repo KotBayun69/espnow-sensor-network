@@ -15,4 +15,4 @@ conf_local.h
 .cache/
 a.out
 get-platformio.py
-ESPNOW_GATEWAY_WSL.code-workspace
+*.code-workspace
