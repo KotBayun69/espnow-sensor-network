@@ -12,7 +12,7 @@
 // Sensor Flags (Bitmask)
 #define SENSOR_FLAG_BME    (1 << 0) // 1
 #define SENSOR_FLAG_LUX    (1 << 1) // 2
-#define SENSOR_FLAG_ADC    (1 << 2) // 4
+#define SENSOR_FLAG_SOIL    (1 << 2) // 4
 #define SENSOR_FLAG_BINARY (1 << 3) // 8
 
 // --- Config Sub-structures ---
@@ -35,8 +35,8 @@ typedef struct __attribute__((packed)) {
 } BinaryData;
 
 typedef struct __attribute__((packed)) {
-    float adcValue;
-} ADCData;
+    float moisture;
+} SoilData;
 
 // --- Main Messages ---
 
@@ -54,7 +54,7 @@ typedef struct __attribute__((packed)) struct_data_message {
     float batteryVoltage;
     BMEData bme;
     LuxData lux;
-    ADCData adc;
+    SoilData soil;
     BinaryData binary;
 } DataMessage;
 
@@ -66,8 +66,10 @@ typedef struct __attribute__((packed)) struct_ack_message {
 enum CmdType {
     CMD_OTA = 1,
     CMD_RESTART = 2,
-    CMD_UPDATE = 3
-    // Future: CMD_CONFIG, CMD_SLEEP_DURATION, etc.
+    CMD_UPDATE = 3,
+    CMD_FLUSH = 4,
+    CMD_CONFIG = 5
+    // Future: CMD_SLEEP_DURATION, etc.
 };
 
 typedef struct __attribute__((packed)) struct_cmd_message {

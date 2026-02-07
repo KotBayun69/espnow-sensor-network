@@ -48,33 +48,73 @@ void saveMqttConfig() {
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  // Handle Calibration Topic (Raw String Payload)
+  if (String(topic).endsWith("/calibrate")) {
+      String payloadStr = "";
+      for (unsigned int i=0; i<length; i++) payloadStr += (char)payload[i];
+      
+      StaticJsonDocument<128> statusDoc;
+      char buffer[128];
+
+      if (payloadStr == "dry") {
+          log("Calibrating DRY...");
+          statusDoc["status"] = "calibrating dry";
+          serializeJson(statusDoc, buffer);
+          mqttClient.publish(("espnow/" + slugify(DEVICE_NAME) + "/status").c_str(), buffer);
+          
+          calibrateSoil(false);
+          
+          statusDoc["status"] = "done";
+          serializeJson(statusDoc, buffer);
+          mqttClient.publish(("espnow/" + slugify(DEVICE_NAME) + "/status").c_str(), buffer);
+          log("Calibration DRY Done.");
+
+      } else if (payloadStr == "wet") {
+          log("Calibrating WET...");
+          statusDoc["status"] = "calibrating wet";
+          serializeJson(statusDoc, buffer);
+          mqttClient.publish(("espnow/" + slugify(DEVICE_NAME) + "/status").c_str(), buffer);
+
+          calibrateSoil(true);
+
+          statusDoc["status"] = "done";
+          serializeJson(statusDoc, buffer);
+          mqttClient.publish(("espnow/" + slugify(DEVICE_NAME) + "/status").c_str(), buffer);
+          log("Calibration WET Done.");
+      }
+      return; // Done with calibration message
+  }
+
+  // Handle Control/Status Topics (JSON Payload)
   StaticJsonDocument<256> doc;
   DeserializationError error = deserializeJson(doc, payload, length);
-  if (error) return;
-
-  bool isTarget = false;
-  if (doc.containsKey("device")) {
-    if (strcmp(doc["device"], DEVICE_NAME) == 0) isTarget = true;
-  } else if (otaMode && doc.containsKey("ota")) {
-    isTarget = true;
+  if (error) {
+      log("MQTT JSON Error: " + String(error.c_str()));
+      return;
   }
+
+  // Since we subscribe specifically, we assume it's for us.
+  bool isTarget = true; 
     
   if (isTarget) {
     if (doc.containsKey("ota")) {
-      if (strcmp(doc["ota"], "off") == 0) {
-        log("MQTT: OTA OFF - Sleeping...");
+      String otaCmd = doc["ota"].as<String>();
+      if (otaCmd == "off") {
+        log("MQTT: OTA OFF - Restarting...");
         StaticJsonDocument<128> statusDoc;
-        statusDoc["status"] = "online";
+        statusDoc["status"] = "calibration finished. restarting in 10 seconds";
         char buffer[128];
         serializeJson(statusDoc, buffer);
-        mqttClient.publish(("espnow/" + WiFi.macAddress() + "/status").c_str(), buffer);
-        delay(500); mqttClient.disconnect();
-        esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
-        esp_deep_sleep_start();
+        mqttClient.publish(("espnow/" + slugify(DEVICE_NAME) + "/status").c_str(), buffer);
+        
+        delay(10000); 
+        mqttClient.disconnect();
+        ESP.restart();
       }
     }
     if (doc.containsKey("restart")) {
-      if (strcmp(doc["restart"], "on") == 0) {
+      String restartCmd = doc["restart"].as<String>();
+      if (restartCmd == "on") {
         log("MQTT: Restart requested");
         delay(100); ESP.restart();
       }
@@ -89,13 +129,14 @@ void mqttReconnect() {
     String clientId = "ESP32-" + String(DEVICE_NAME);
     if (mqttClient.connect(clientId.c_str(), mqtt_cfg.user, mqtt_cfg.pass)) {
       log("✓ MQTT connected");
-      mqttClient.subscribe("espnow/control");
+      mqttClient.subscribe(("espnow/" + slugify(DEVICE_NAME) + "/control").c_str());
+      mqttClient.subscribe(("espnow/" + slugify(DEVICE_NAME) + "/calibrate").c_str());
       StaticJsonDocument<128> statusDoc;
       statusDoc["connection"] = WiFi.localIP().toString();
       statusDoc["status"] = "ota";
       char buffer[128];
       serializeJson(statusDoc, buffer);
-      mqttClient.publish(("espnow/" + WiFi.macAddress() + "/status").c_str(), buffer);
+      mqttClient.publish(("espnow/" + slugify(DEVICE_NAME) + "/status").c_str(), buffer);
     } else {
       log("✗ MQTT failed, rc=" + String(mqttClient.state()));
     }
@@ -118,7 +159,17 @@ void enterOtaMode() {
     wm.addParameter(&c_server); wm.addParameter(&c_port);
     wm.addParameter(&c_user); wm.addParameter(&c_pass);
 
-    if (wm.autoConnect("ESP-NOW-DEVICE-OTA")) {
+    wm.addParameter(&c_user); wm.addParameter(&c_pass);
+
+    bool connected;
+    if (strlen(mqtt_cfg.server) == 0) {
+        log("No MQTT config. Forcing Config Portal...");
+        connected = wm.startConfigPortal("ESP-NOW-DEVICE-OTA");
+    } else {
+        connected = wm.autoConnect("ESP-NOW-DEVICE-OTA");
+    }
+
+    if (connected) {
       strlcpy(mqtt_cfg.server, c_server.getValue(), 40);
       mqtt_cfg.port = atoi(c_port.getValue());
       strlcpy(mqtt_cfg.user, c_user.getValue(), 40);
@@ -157,8 +208,8 @@ void setup() {
   #ifdef USE_BH1750
       configMsg.sensorFlags |= SENSOR_FLAG_LUX;
   #endif
-  #ifdef USE_ADC_SENSOR
-      configMsg.sensorFlags |= SENSOR_FLAG_ADC;
+  #ifdef USE_SOIL_SENSOR
+      configMsg.sensorFlags |= SENSOR_FLAG_SOIL;
   #endif
   #ifdef USE_BINARY_SENSOR
       configMsg.sensorFlags |= SENSOR_FLAG_BINARY;
@@ -177,15 +228,21 @@ void setup() {
   dataMsg.sensorFlags = readings.flags;
   dataMsg.bme = readings.bme;
   dataMsg.lux = readings.lux;
-  dataMsg.adc = readings.adc;
+  dataMsg.soil = readings.soil;
   dataMsg.binary = readings.binary;
 
   sendDataMessage(dataMsg);
   
   unsigned long waitStart = millis();
   while (millis() - waitStart < 300) {
-      if (isOtaRequested()) break;
+      if (isOtaRequested() || isConfigRequestRequested()) break;
       delay(10);
+  }
+
+  if (isConfigRequestRequested()) {
+      clearConfigRequest();
+      sendConfigMessage(configMsg);
+      delay(100); // Give time for transmission
   }
 
   if (isOtaRequested()) enterOtaMode();

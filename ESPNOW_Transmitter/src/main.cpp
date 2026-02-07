@@ -72,6 +72,12 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
             log("Control for [" + topicDeviceName + "]: " + relayedJson);
             swSerial.println(relayedJson);
             
+            if (doc["cmd"] == "send_config") {
+                String slugName = slugify(topicDeviceName);
+                log("Clearing discovery cache for: " + slugName);
+                discoveredDevices.erase(slugName);
+            }
+
             if (topicDeviceName == "transmitter") {
                if (doc["cmd"] == "restart") {
                    log("RESTART requested");
@@ -126,7 +132,8 @@ void reconnect() {
 void publishDiscoveryWithMac(const JsonVariantConst& config, const char* macAddress) {
     const char* deviceName = config["deviceName"];
     if (deviceName == nullptr) return;
-    if (discoveredDevices.count(deviceName)) return;
+    String slugName = slugify(deviceName);
+    if (discoveredDevices.count(slugName)) return;
     
     int sensorFlags = config["sensorFlags"] | 0;
     int sleepInterval = config["sleepInterval"] | 15; 
@@ -164,8 +171,11 @@ void publishDiscoveryWithMac(const JsonVariantConst& config, const char* macAddr
 
         char buffer[1024];
         serializeJson(doc, buffer);
-        client.publish(discoveryTopic.c_str(), buffer, true); // Retain discovery
-        log("Published discovery: " + discoveryTopic);
+        if (client.publish(discoveryTopic.c_str(), buffer, true)) {
+            log("✓ Published discovery: " + discoveryTopic);
+        } else {
+            log("✗ Failed to publish discovery: " + discoveryTopic + " (Payload too large?)");
+        }
     };
 
     // Always publish Battery
@@ -181,11 +191,8 @@ void publishDiscoveryWithMac(const JsonVariantConst& config, const char* macAddr
         publishEntity("sensor", "lux", "Illuminance", "illuminance", "lx", "{{ value_json.lux | round(1) }}");
     }
 
-    if (sensorFlags & SENSOR_FLAG_ADC) {
-        // Soil/ADC is generic, commonly moisture or simple percentage
-        // Using "moisture" device class if applicable, or generic sensor
-        // Assuming percentage 0-100 based on val_tpl in previous code
-        publishEntity("sensor", "adc", "ADC Value", NULL, "%", "{{ value_json.adc | round(1) }}");
+    if (sensorFlags & SENSOR_FLAG_SOIL) {
+        publishEntity("sensor", "soil", "Soil Moisture", "moisture", "%", "{{ value_json.soil | round(1) }}");
     }
 
     if (sensorFlags & SENSOR_FLAG_BINARY) {
@@ -212,11 +219,14 @@ void publishDiscoveryWithMac(const JsonVariantConst& config, const char* macAddr
 
         char buffer[1024];
         serializeJson(doc, buffer);
-        client.publish(discoveryTopic.c_str(), buffer, true);
-        log("Published discovery: " + discoveryTopic);
+        if (client.publish(discoveryTopic.c_str(), buffer, true)) {
+            log("✓ Published discovery: " + discoveryTopic);
+        } else {
+            log("✗ Failed to publish discovery: " + discoveryTopic);
+        }
     }
     
-    discoveredDevices[deviceName] = true;
+    discoveredDevices[slugName] = true;
 }
 
 void setup() {
@@ -268,14 +278,21 @@ void loop() {
         static String inputBuffer = "";
         if (c == '\n') {
             if (inputBuffer.length() > 0) {
-                DynamicJsonDocument doc(1024);
+                DynamicJsonDocument doc(1280); // Slightly larger
                 DeserializationError error = deserializeJson(doc, inputBuffer);
                 if (!error) {
+                    const char* type = doc["type"];
                     const char* deviceName = doc["deviceName"];
+                    log("Transmitter: Received " + String(type ? type : "null") + " from Gateway for: " + String(deviceName ? deviceName : "null"));
+                    
                     if (doc["type"] == "CONFIG" && deviceName) {
                         publishDiscoveryWithMac(doc, doc["mac"] | "");
                     } else if (deviceName) {
+                        // ... existing state/control handling ...
                         String topic = String(mqtt_topic_base) + "/" + slugify(deviceName) + "/state";
+                        doc.remove("deviceName");
+                        doc.remove("type");
+                        doc.remove("mac");
                         String payload; serializeJson(doc, payload);
                         client.publish(topic.c_str(), payload.c_str());
                     } else if (doc["device"] == "gateway") {
@@ -283,6 +300,8 @@ void loop() {
                          String payload; serializeJson(doc, payload);
                          client.publish("espnow/gateway/state", payload.c_str());
                     }
+                } else {
+                    log("Transmitter: JSON Error: " + String(error.c_str()) + " in buffer: " + inputBuffer);
                 }
                 inputBuffer = "";
             }

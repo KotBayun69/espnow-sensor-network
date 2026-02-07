@@ -204,8 +204,8 @@ void processBuffer() {
             if (data.sensorFlags & SENSOR_FLAG_LUX) {
                 doc["lux"] = data.lux.lux;
             }
-            if (data.sensorFlags & SENSOR_FLAG_ADC) {
-                doc["adc"] = data.adc.adcValue;
+            if (data.sensorFlags & SENSOR_FLAG_SOIL) {
+                doc["soil"] = data.soil.moisture;
             }
             if (data.sensorFlags & SENSOR_FLAG_BINARY) {
                 doc["binaryState"] = data.binary.state;
@@ -215,8 +215,9 @@ void processBuffer() {
         if (doc.containsKey("type")) {
             String json;
             serializeJson(doc, json);
-            log(json);
+            log("Gateway -> Transmitter: " + json);
             swSerial.println(json);
+            delay(150); // Give transmitter time to process and avoid serial churn
         }
         tail = (tail + 1) % BUFFER_SIZE;
     }
@@ -229,6 +230,9 @@ uint8_t getCmdType(const char* cmdName) {
     if (cmd == "CMD_OTA") return CMD_OTA;
     if (cmd == "CMD_RESTART") return CMD_RESTART;
     if (cmd == "CMD_UPDATE") return CMD_UPDATE;
+    if (cmd == "CMD_FLUSH") return CMD_FLUSH;
+    if (cmd == "CMD_CONFIG" || cmd == "CMD_SEND_CONFIG") return CMD_CONFIG;
+    if (cmd == "CMD_CALIBRATE") return CMD_OTA; // Reuse OTA mode for calibration
     return 0;
 }
 
@@ -256,17 +260,28 @@ void processCommand(String line) {
                             if (cmdType == CMD_RESTART) {
                                 log("Gateway RESTART requested...");
                                 delay(100); ESP.restart();
+                            } else if (cmdType == CMD_FLUSH) {
+                                log("Gateway: Flushing known devices list...");
+                                deviceNames.clear();
+                                deviceMacs.clear();
+                                saveKnownDevices();
+                                log("Gateway: Devices list flushed.");
                             }
                         } else if (actualPrettyName != "" && deviceMacs.count(actualPrettyName)) {
-                            CmdMessage cmd;
-                            cmd.type = MSG_CMD;
-                            cmd.cmdType = cmdType;
-                            cmd.value = true;
-                            std::vector<uint8_t>& macVec = deviceMacs[actualPrettyName];
-                            uint8_t mac_addr[6];
-                            std::copy(macVec.begin(), macVec.end(), mac_addr);
-                            esp_now_add_peer(mac_addr, ESP_NOW_ROLE_COMBO, 1, NULL, 0);
-                            esp_now_send(mac_addr, (uint8_t*)&cmd, sizeof(CmdMessage));
+                            if (cmdType == CMD_OTA) {
+                                stayAwakeState[actualPrettyName] = true;
+                                log("Gateway: Queued OTA/Calibrate for " + actualPrettyName);
+                            } else {
+                                CmdMessage cmd;
+                                cmd.type = MSG_CMD;
+                                cmd.cmdType = cmdType;
+                                cmd.value = true;
+                                std::vector<uint8_t>& macVec = deviceMacs[actualPrettyName];
+                                uint8_t mac_addr[6];
+                                std::copy(macVec.begin(), macVec.end(), mac_addr);
+                                esp_now_add_peer(mac_addr, ESP_NOW_ROLE_COMBO, 1, NULL, 0);
+                                esp_now_send(mac_addr, (uint8_t*)&cmd, sizeof(CmdMessage));
+                            }
                         }
                     }
                     return; 

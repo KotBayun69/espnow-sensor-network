@@ -8,7 +8,7 @@ struct SensorReadings {
     float batteryVoltage;
     BMEData bme;
     LuxData lux;
-    ADCData adc;
+    SoilData soil;
     BinaryData binary;
     // Helper unions for mapping to Protocol DataMessage if needed, 
     // OR we just map field-by-field in main.cpp. 
@@ -21,9 +21,9 @@ struct SensorReadings {
 // Define features based on device type
 // Features are now defined in platformio.ini
 
-void initSensors(); // No params needing configuration now, but let's keep it simple
+void initSensors();
 
-// Default includeEnviro to true for backward compatibility
-SensorReadings readSensors(bool includeEnviro = true);
+SensorReadings readSensors();
+void calibrateSoil(bool isWet);
 
 #endif
